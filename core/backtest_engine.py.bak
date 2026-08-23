@@ -1,0 +1,219 @@
+"""
+Offline backtest engine -- reuses signal_engine.compute_signals() so the
+backtest logic is guaranteed identical to the live engine's signal logic.
+
+Runs over locally stored 1m history (data/backtest/<SYMBOL>_1m.csv), lets
+you override EMA fast/slow, TP/SL, direction, leverage, margin and
+max_open_positions, and returns per-trade rows plus summary metrics
+(winrate, profit factor, max drawdown, net PnL, trade count) -- same
+metric set as leverage_sweep_short_only.py / grid_search_short_only.py.
+"""
+
+import uuid
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from . import config
+from . import signal_engine
+from . import bybit_client
+
+
+def _backtest_csv_path(symbol: str) -> Path:
+    return config.BACKTEST_DIR / f"{symbol}_1m.csv"
+
+
+def ensure_backtest_history(symbol: str, days: int = 90) -> pd.DataFrame:
+    """
+    Downloads (or reuses cached) 1m history for the backtest tab.
+    days=90 matches the "3 months" default; days=365 for the future
+    1-year backtest mode.
+    """
+    path = _backtest_csv_path(symbol)
+    if path.exists():
+        df = pd.read_csv(path, index_col=0, parse_dates=True)
+        df.index = pd.to_datetime(df.index, utc=True)
+        span_days = (df.index.max() - df.index.min()).days
+        if span_days >= days - 1:
+            return df
+
+    end = pd.Timestamp.utcnow()
+    start = end - pd.Timedelta(days=days)
+    df = bybit_client.fetch_klines_range(
+        symbol, config.TIMEFRAMES["1m"],
+        start_time_ms=int(start.value // 1_000_000),
+        end_time_ms=int(end.value // 1_000_000),
+    )
+    df.to_csv(path)
+    return df
+
+
+def _max_drawdown_pct(equity_curve: np.ndarray) -> float:
+    if len(equity_curve) == 0:
+        return 0.0
+    peak = np.maximum.accumulate(equity_curve)
+    dd = np.where(peak > 0, (peak - equity_curve) / peak * 100.0, 0.0)
+    return float(dd.max())
+
+
+def run_backtest(
+    symbols,
+    ema_fast: int,
+    ema_slow: int,
+    tp_pct: float,
+    sl_pct: float,
+    direction: str,
+    initial_equity: float,
+    margin_per_trade: float,
+    leverage: float,
+    max_open_positions: int,
+    days: int = 90,
+):
+    market_data = {}
+    signal_rows = []
+
+    for symbol in symbols:
+        df_1m = ensure_backtest_history(symbol, days=days)
+        if df_1m.empty or len(df_1m) < ema_slow + 10:
+            continue
+
+        with_signals = signal_engine.compute_signals(df_1m, ema_fast, ema_slow, direction)
+        market_data[symbol] = with_signals[["open", "high", "low", "close"]].copy()
+
+        if direction in ("both", "long"):
+            longs = with_signals.index[with_signals["long_signal"].fillna(False)]
+            signal_rows.extend(
+                {"time": ts, "symbol": symbol, "direction": "long",
+                 "entry_price": float(with_signals.at[ts, "close"])}
+                for ts in longs
+            )
+        if direction in ("both", "short"):
+            shorts = with_signals.index[with_signals["short_signal"].fillna(False)]
+            signal_rows.extend(
+                {"time": ts, "symbol": symbol, "direction": "short",
+                 "entry_price": float(with_signals.at[ts, "close"])}
+                for ts in shorts
+            )
+
+    if not market_data:
+        return {"trades": [], "summary": _empty_summary(initial_equity), "equity_curve": []}
+
+    signal_table = pd.DataFrame(signal_rows)
+    if signal_table.empty:
+        return {"trades": [], "summary": _empty_summary(initial_equity), "equity_curve": []}
+
+    signal_table = signal_table.sort_values(["time", "symbol", "direction"]).reset_index(drop=True)
+    signal_grouped = {ts: g for ts, g in signal_table.groupby("time")}
+
+    all_times = pd.Index(sorted(set().union(*[df.index for df in market_data.values()])))
+
+    open_positions = []
+    equity = initial_equity
+    peak_equity = initial_equity
+    max_dd = 0.0
+    trade_rows = []
+    equity_curve = []
+
+    for ts in all_times:
+        still_open = []
+        for pos in open_positions:
+            df = market_data[pos["symbol"]]
+            if ts not in df.index:
+                still_open.append(pos)
+                continue
+
+            row = df.loc[ts]
+            entry_price = pos["entry_price"]
+
+            if pos["direction"] == "long":
+                stop_price = entry_price * (1.0 - sl_pct / 100.0)
+                take_price = entry_price * (1.0 + tp_pct / 100.0)
+                hit_sl = row["low"] <= stop_price
+                hit_tp = row["high"] >= take_price
+                exit_price = stop_price if hit_sl else take_price
+                pnl_pct = (exit_price / entry_price) - 1.0
+            else:
+                stop_price = entry_price * (1.0 + sl_pct / 100.0)
+                take_price = entry_price * (1.0 - tp_pct / 100.0)
+                hit_sl = row["high"] >= stop_price
+                hit_tp = row["low"] <= take_price
+                exit_price = stop_price if hit_sl else take_price
+                pnl_pct = 1.0 - (exit_price / entry_price)
+
+            if hit_sl or hit_tp:
+                pnl_usdt = pos["notional"] * pnl_pct
+                equity += pnl_usdt
+                trade_rows.append({
+                    "id": pos["id"],
+                    "symbol": pos["symbol"],
+                    "direction": pos["direction"],
+                    "entry_time": pos["entry_time"].isoformat(),
+                    "exit_time": ts.isoformat(),
+                    "entry_price": entry_price,
+                    "exit_price": float(exit_price),
+                    "exit_reason": "SL" if hit_sl else "TP",
+                    "pnl_pct": pnl_pct * 100.0,
+                    "pnl_usdt": pnl_usdt,
+                })
+            else:
+                still_open.append(pos)
+
+        open_positions = still_open
+
+        if ts in signal_grouped:
+            for _, sig in signal_grouped[ts].iterrows():
+                if len(open_positions) >= max_open_positions:
+                    continue
+                open_positions.append({
+                    "id": str(uuid.uuid4()),
+                    "symbol": sig["symbol"],
+                    "direction": sig["direction"],
+                    "entry_time": ts,
+                    "entry_price": float(sig["entry_price"]),
+                    "notional": margin_per_trade * leverage,
+                })
+
+        peak_equity = max(peak_equity, equity)
+        dd_pct = ((peak_equity - equity) / peak_equity) * 100 if peak_equity > 0 else 0.0
+        max_dd = max(max_dd, dd_pct)
+        equity_curve.append({"time": ts.isoformat(), "equity": equity})
+
+    trades_df = pd.DataFrame(trade_rows)
+    summary = _summarize(trades_df, initial_equity, equity, max_dd)
+
+    return {
+        "trades": trade_rows,
+        "summary": summary,
+        "equity_curve": equity_curve[-2000:],
+    }
+
+
+def _empty_summary(initial_equity):
+    return {
+        "closed_trades": 0, "wins": 0, "losses": 0, "winrate_pct": 0.0,
+        "net_pnl_usdt": 0.0, "return_pct": 0.0, "profit_factor": 0.0,
+        "max_drawdown_pct": 0.0, "final_equity": initial_equity,
+    }
+
+
+def _summarize(trades_df, initial_equity, final_equity, max_dd):
+    if trades_df.empty:
+        return _empty_summary(initial_equity)
+
+    wins = int((trades_df["pnl_usdt"] > 0).sum())
+    losses = int((trades_df["pnl_usdt"] < 0).sum())
+    gross_win = float(trades_df.loc[trades_df["pnl_usdt"] > 0, "pnl_usdt"].sum())
+    gross_loss = float(-trades_df.loc[trades_df["pnl_usdt"] < 0, "pnl_usdt"].sum())
+
+    return {
+        "closed_trades": int(len(trades_df)),
+        "wins": wins,
+        "losses": losses,
+        "winrate_pct": (wins / len(trades_df)) * 100.0,
+        "net_pnl_usdt": float(final_equity - initial_equity),
+        "return_pct": ((final_equity / initial_equity) - 1.0) * 100.0,
+        "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else float("inf"),
+        "max_drawdown_pct": float(max_dd),
+        "final_equity": float(final_equity),
+    }

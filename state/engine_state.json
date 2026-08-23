@@ -1,0 +1,14 @@
+{
+  "running": true,
+  "params": {
+    "ema_fast": 7,
+    "ema_slow": 133,
+    "tp_pct": 2.8,
+    "sl_pct": 1.2,
+    "direction": "both",
+    "margin_per_trade": 500,
+    "leverage": 50,
+    "max_open_positions": 20
+  },
+  "last_update": "2026-08-23T19:24:34.931844+00:00"
+}

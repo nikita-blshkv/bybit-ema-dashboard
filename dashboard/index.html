@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EMA Cross Dashboard — BTC/ETH</title>
+<link rel="stylesheet" href="./style.css">
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <h1>EMA Cross Dashboard <span>16 пар — Bybit paper engine</span></h1>
+    <div style="display:flex; align-items:center; gap:10px;">
+      <div id="status-pill" class="status-pill stopped"><span class="dot"></span><span id="status-text">Остановлен</span></div>
+      <button id="btn-start" class="btn btn-start">Start</button>
+      <button id="btn-stop" class="btn btn-stop">Stop</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button data-tab="live" class="active">Live / Paper</button>
+    <button data-tab="backtest">Backtest</button>
+    <button data-tab="chart">Chart</button>
+  </nav>
+
+  <!-- ============ LIVE TAB ============ -->
+  <main id="tab-live" class="active">
+    <div class="grid">
+
+      <div class="panel">
+        <h2>Параметры стратегии</h2>
+
+        <div class="field-row">
+          <div class="field">
+            <label>EMA fast</label>
+            <input type="number" id="p-ema-fast" value="7" min="1">
+          </div>
+          <div class="field">
+            <label>EMA slow</label>
+            <input type="number" id="p-ema-slow" value="133" min="2">
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Take profit, %</label>
+            <input type="number" id="p-tp" value="2.8" step="0.1" min="0.1">
+          </div>
+          <div class="field">
+            <label>Stop loss, %</label>
+            <input type="number" id="p-sl" value="1.2" step="0.1" min="0.1">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Направление</label>
+          <div class="radio-row" id="p-direction">
+            <label data-val="both" class="checked">Both</label>
+            <label data-val="long">Long</label>
+            <label data-val="short">Short</label>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Маржа / сделка, USDT</label>
+            <input type="number" id="p-margin" value="1000" min="1">
+          </div>
+          <div class="field">
+            <label>Плечо</label>
+            <input type="number" id="p-leverage" value="10" min="1">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Макс. открытых позиций</label>
+          <input type="number" id="p-max-open" value="10" min="1">
+        </div>
+
+        <div class="field">
+          <label>Торгуемые монеты</label>
+          <div class="coin-checklist" id="p-symbols">
+            <label><input type="checkbox" value="BTCUSDT" checked> BTC</label>
+            <label><input type="checkbox" value="ETHUSDT" checked> ETH</label>
+            <label><input type="checkbox" value="XRPUSDT" checked> XRP</label>
+            <label><input type="checkbox" value="BNBUSDT" checked> BNB</label>
+            <label><input type="checkbox" value="SOLUSDT" checked> SOL</label>
+            <label><input type="checkbox" value="HYPEUSDT" checked> HYPE</label>
+            <label><input type="checkbox" value="ZECUSDT" checked> ZEC</label>
+            <label><input type="checkbox" value="LTCUSDT" checked> LTC</label>
+            <label><input type="checkbox" value="HBARUSDT" checked> HBAR</label>
+            <label><input type="checkbox" value="SUIUSDT" checked> SUI</label>
+            <label><input type="checkbox" value="NEARUSDT" checked> NEAR</label>
+            <label><input type="checkbox" value="OKBUSDT" checked> OKB</label>
+            <label><input type="checkbox" value="ASTERUSDT" checked> ASTER</label>
+            <label><input type="checkbox" value="MNTUSDT" checked> MNT</label>
+            <label><input type="checkbox" value="DOTUSDT" checked> DOT</label>
+            <label><input type="checkbox" value="WLDUSDT" checked> WLD</label>
+          </div>
+          <div style="display:flex; gap:8px; margin-top:6px;">
+            <button id="btn-symbols-all" class="btn" type="button" style="flex:1; padding:4px; font-size:12px;">Выбрать все</button>
+            <button id="btn-symbols-none" class="btn" type="button" style="flex:1; padding:4px; font-size:12px;">Снять все</button>
+          </div>
+        </div>
+
+        <button id="btn-save-params" class="btn btn-primary" style="width:100%;">Сохранить параметры</button>
+
+        <div class="section-title">Equity</div>
+        <div class="stat-grid">
+          <div class="stat-card"><div class="label">Текущий equity</div><div class="value" id="stat-equity">—</div></div>
+          <div class="stat-card"><div class="label">Net PnL</div><div class="value" id="stat-pnl">—</div></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="panel">
+          <div class="chart-toolbar">
+            <div class="symbol-tabs symbol-tabs-compact" id="symbol-tabs">
+              <button data-symbol="BTCUSDT" class="active">BTC</button>
+              <button data-symbol="ETHUSDT">ETH</button>
+              <button data-symbol="XRPUSDT">XRP</button>
+              <button data-symbol="BNBUSDT">BNB</button>
+              <button data-symbol="SOLUSDT">SOL</button>
+              <button data-symbol="HYPEUSDT">HYPE</button>
+              <button data-symbol="ZECUSDT">ZEC</button>
+              <button data-symbol="LTCUSDT">LTC</button>
+              <button data-symbol="HBARUSDT">HBAR</button>
+              <button data-symbol="SUIUSDT">SUI</button>
+              <button data-symbol="NEARUSDT">NEAR</button>
+              <button data-symbol="OKBUSDT">OKB</button>
+              <button data-symbol="ASTERUSDT">ASTER</button>
+              <button data-symbol="MNTUSDT">MNT</button>
+              <button data-symbol="DOTUSDT">DOT</button>
+              <button data-symbol="WLDUSDT">WLD</button>
+            </div>
+            <div class="tf-tabs" id="tf-tabs">
+              <button data-tf="1m" class="active">1m</button>
+              <button data-tf="5m">5m</button>
+              <button data-tf="1h">1h</button>
+            </div>
+          </div>
+          <div id="live-chart-legend" style="display:flex; gap:14px; font-size:12px; color:#8b93a3; padding:6px 4px 0;"></div>
+          <div id="chart-container"></div>
+        </div>
+
+        <div class="section-title">Открытые позиции</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Symbol</th><th>Dir</th><th>Entry</th><th>Entry price</th><th>TP</th><th>SL</th><th>Notional</th></tr>
+            </thead>
+            <tbody id="open-positions-body">
+              <tr class="empty-row"><td colspan="7">Нет открытых позиций</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="section-title">
+          Live позиции на бирже (Bybit Demo)
+          <span id="live-balance-badge" class="balance-badge">Не подключено</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Symbol</th><th>Dir</th><th>Size</th><th>Leverage</th><th>Margin</th><th>Notional</th><th>Entry</th><th>Mark</th><th>TP</th><th>SL</th><th>uPnL</th></tr>
+            </thead>
+            <tbody id="live-positions-body">
+              <tr class="empty-row"><td colspan="11">Bybit demo API-ключи не настроены (core/bybit_keys.py)</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="section-title">Журнал сделок</div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>Symbol</th><th>Dir</th><th>Exit</th><th>Entry</th><th>Exit price</th><th>Reason</th><th>PnL %</th><th>PnL USDT</th><th>Closed</th></tr>
+            </thead>
+            <tbody id="trade-log-body">
+              <tr class="empty-row"><td colspan="9">Пока нет закрытых сделок</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ============ BACKTEST TAB ============ -->
+  <main id="tab-backtest">
+    <div class="grid">
+
+      <div class="panel">
+        <h2>Параметры бэктеста</h2>
+
+        <div class="field">
+          <label>Символы</label>
+          <div class="radio-row radio-row-compact" id="bt-symbols">
+            <label data-val="BTCUSDT" class="checked">BTC</label>
+            <label data-val="ETHUSDT" class="checked">ETH</label>
+            <label data-val="XRPUSDT">XRP</label>
+            <label data-val="BNBUSDT">BNB</label>
+            <label data-val="SOLUSDT">SOL</label>
+            <label data-val="HYPEUSDT">HYPE</label>
+            <label data-val="ZECUSDT">ZEC</label>
+            <label data-val="LTCUSDT">LTC</label>
+            <label data-val="HBARUSDT">HBAR</label>
+            <label data-val="SUIUSDT">SUI</label>
+            <label data-val="NEARUSDT">NEAR</label>
+            <label data-val="OKBUSDT">OKB</label>
+            <label data-val="ASTERUSDT">ASTER</label>
+            <label data-val="MNTUSDT">MNT</label>
+            <label data-val="DOTUSDT">DOT</label>
+            <label data-val="WLDUSDT">WLD</label>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>EMA fast</label>
+            <input type="number" id="bt-ema-fast" value="7" min="1">
+          </div>
+          <div class="field">
+            <label>EMA slow</label>
+            <input type="number" id="bt-ema-slow" value="133" min="2">
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Take profit, %</label>
+            <input type="number" id="bt-tp" value="2.8" step="0.1" min="0.1">
+          </div>
+          <div class="field">
+            <label>Stop loss, %</label>
+            <input type="number" id="bt-sl" value="1.2" step="0.1" min="0.1">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Направление</label>
+          <div class="radio-row" id="bt-direction">
+            <label data-val="both" class="checked">Both</label>
+            <label data-val="long">Long</label>
+            <label data-val="short">Short</label>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Маржа / сделка</label>
+            <input type="number" id="bt-margin" value="1000" min="1">
+          </div>
+          <div class="field">
+            <label>Плечо</label>
+            <input type="number" id="bt-leverage" value="10" min="1">
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Макс. открытых позиций</label>
+            <input type="number" id="bt-max-open" value="10" min="1">
+          </div>
+          <div class="field">
+            <label>Дней истории</label>
+            <input type="number" id="bt-days" value="90" min="1">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Начальный equity, USDT</label>
+          <input type="number" id="bt-initial-equity" value="100000" min="1">
+        </div>
+
+        <button id="backtest-run-btn" class="btn btn-primary">Запустить бэктест</button>
+      </div>
+
+      <div>
+        <div class="panel">
+          <h2>Результат</h2>
+          <div id="bt-loading" class="loading-overlay">
+            <div class="spinner"></div>
+            <span id="bt-loading-text">Считаю бэктест...</span>
+          </div>
+
+          <div id="bt-results" style="display:none;">
+            <div class="stat-grid">
+              <div class="stat-card"><div class="label">Net PnL</div><div class="value" id="bt-stat-pnl">—</div></div>
+              <div class="stat-card"><div class="label">Return %</div><div class="value" id="bt-stat-return">—</div></div>
+              <div class="stat-card"><div class="label">Win rate</div><div class="value" id="bt-stat-winrate">—</div></div>
+              <div class="stat-card"><div class="label">Profit factor</div><div class="value" id="bt-stat-pf">—</div></div>
+              <div class="stat-card"><div class="label">Max drawdown</div><div class="value" id="bt-stat-dd">—</div></div>
+              <div class="stat-card"><div class="label">Сделок</div><div class="value" id="bt-stat-trades">—</div></div>
+            </div>
+
+            <div class="section-title">Equity curve</div>
+            <div id="bt-chart-container" style="height:300px; border:1px solid var(--border); border-radius:8px; overflow:hidden;"></div>
+
+            <div class="section-title">Сделки (последние 200)</div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>Symbol</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Reason</th><th>PnL %</th><th>PnL USDT</th></tr>
+                </thead>
+                <tbody id="bt-trades-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- ============ CHART TAB ============ -->
+  <main id="tab-chart">
+    <div class="grid">
+
+      <div class="panel">
+        <h2>Параметры графика</h2>
+
+        <div class="field">
+          <label>Символ</label>
+          <div class="radio-row radio-row-compact" id="ct-symbols">
+            <label data-val="BTCUSDT" class="checked">BTC</label>
+            <label data-val="ETHUSDT">ETH</label>
+            <label data-val="XRPUSDT">XRP</label>
+            <label data-val="BNBUSDT">BNB</label>
+            <label data-val="SOLUSDT">SOL</label>
+            <label data-val="HYPEUSDT">HYPE</label>
+            <label data-val="ZECUSDT">ZEC</label>
+            <label data-val="LTCUSDT">LTC</label>
+            <label data-val="HBARUSDT">HBAR</label>
+            <label data-val="SUIUSDT">SUI</label>
+            <label data-val="NEARUSDT">NEAR</label>
+            <label data-val="OKBUSDT">OKB</label>
+            <label data-val="ASTERUSDT">ASTER</label>
+            <label data-val="MNTUSDT">MNT</label>
+            <label data-val="DOTUSDT">DOT</label>
+            <label data-val="WLDUSDT">WLD</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Таймфрейм</label>
+          <div class="radio-row" id="ct-tf">
+            <label data-val="1m" class="checked">1m</label>
+            <label data-val="5m">5m</label>
+            <label data-val="1h">1h</label>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>EMA fast</label>
+            <input type="number" id="ct-ema-fast" value="7" min="1">
+          </div>
+          <div class="field">
+            <label>EMA slow</label>
+            <input type="number" id="ct-ema-slow" value="133" min="2">
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>Take profit, %</label>
+            <input type="number" id="ct-tp" value="2.8" step="0.1" min="0.1">
+          </div>
+          <div class="field">
+            <label>Stop loss, %</label>
+            <input type="number" id="ct-sl" value="1.2" step="0.1" min="0.1">
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Направление</label>
+          <div class="radio-row" id="ct-direction">
+            <label data-val="both" class="checked">Both</label>
+            <label data-val="long">Long</label>
+            <label data-val="short">Short</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Дней истории</label>
+          <input type="number" id="ct-days" value="90" min="1">
+        </div>
+
+        <button id="ct-load-btn" class="btn btn-primary" style="width:100%;">Загрузить график</button>
+
+        <div class="section-title">Сделки на этом символе</div>
+        <div class="table-wrap" style="max-height:340px; overflow-y:auto;">
+          <table>
+            <thead>
+              <tr><th>#</th><th>Dir</th><th>Entry</th><th>Exit</th><th>Reason</th></tr>
+            </thead>
+            <tbody id="ct-trades-body">
+              <tr class="empty-row"><td colspan="5">Нажмите «Загрузить график»</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <div class="panel">
+          <div class="chart-toolbar">
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button id="ct-back-50" class="btn">← 50 свечей назад</button>
+              <button id="ct-fwd-50" class="btn">50 свечей вперёд →</button>
+              <button id="ct-fit" class="btn">Показать всё</button>
+            </div>
+            <div id="ct-legend" style="font-size:12px; color:var(--muted); display:flex; gap:14px; flex-wrap:wrap;"></div>
+          </div>
+          <div id="ct-loading" class="loading-overlay" style="display:none;"><div class="spinner"></div>Загружаю данные...</div>
+          <div id="ct-chart-container" style="height:520px;"></div>
+          <div id="ct-data-range" style="font-size:12px; color:var(--muted); padding:6px 4px;"></div>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <footer>Paper-trading only. Реальные ордера на Bybit не отправляются. Процесс должен работать непрерывно, чтобы позиции закрывались по TP/SL.</footer>
+
+  <div id="toast" class="toast"></div>
+</div>
+
+<script src="./app.js"></script>
+</body>
+</html>
