@@ -219,14 +219,32 @@ async function refreshCandles() {
 
 async function refreshLiveTradeMarkers() {
   try {
-    const allTrades = await apiGet("/api/trade_log?limit=1000");
-    const symbolTrades = allTrades.filter((t) => t.symbol === currentSymbol);
-    if (!symbolTrades.length) {
+    const [allTrades, openPositions] = await Promise.all([
+      apiGet("/api/trade_log?limit=1000"),
+      apiGet("/api/open_positions"),
+    ]);
+
+    const closedForSymbol = allTrades.filter((t) => t.symbol === currentSymbol);
+    const openForSymbol = openPositions
+      .filter((p) => p.symbol === currentSymbol)
+      .map((p) => ({
+        symbol: p.symbol,
+        direction: p.direction,
+        entry_time: p.entry_time,
+        entry_price: p.entry_price,
+        exit_time: null,
+        exit_price: null,
+        pnl_pct: null,
+        exit_reason: null,
+      }));
+
+    const combined = [...closedForSymbol, ...openForSymbol];
+    if (!combined.length) {
       liveCandleSeries.setMarkers([]);
       return;
     }
 
-    const numbered = numberTrades(symbolTrades);
+    const numbered = numberTrades(combined);
     const markers = [];
     numbered.forEach((t) => {
       markers.push({
@@ -236,6 +254,8 @@ async function refreshLiveTradeMarkers() {
         shape: t.direction === "long" ? "arrowUp" : "arrowDown",
         text: `#${t.tradeNum} ${t.direction === "long" ? "LONG" : "SHORT"} @ ${Number(t.entry_price).toFixed(2)}`,
       });
+
+      if (!t.exit_time) return;
 
       const pnlPct = Number(t.pnl_pct);
       const isProfit = Number.isFinite(pnlPct) ? pnlPct >= 0 : (t.exit_reason === "TP");
