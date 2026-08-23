@@ -1,1 +1,3 @@
-core/bybit_keys.py
+__pycache__/
+*.pyc
+server.log
