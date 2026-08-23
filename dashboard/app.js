@@ -248,7 +248,7 @@ async function refreshLiveTradeMarkers() {
     const markers = [];
     numbered.forEach((t) => {
       markers.push({
-        time: toUnixTime(t.entry_time),
+        time: Math.floor(new Date(t.entry_time).getTime() / 1000),
         position: t.direction === "long" ? "belowBar" : "aboveBar",
         color: t.direction === "long" ? "#26a269" : "#d64545",
         shape: t.direction === "long" ? "arrowUp" : "arrowDown",
@@ -265,7 +265,7 @@ async function refreshLiveTradeMarkers() {
         : `#${t.tradeNum} ${t.exit_reason} @ ${Number(t.exit_price).toFixed(2)}`;
 
       markers.push({
-        time: toUnixTime(t.exit_time),
+        time: Math.floor(new Date(t.exit_time).getTime() / 1000),
         position: t.direction === "long" ? "aboveBar" : "belowBar",
         color: pnlColor,
         shape: "circle",
@@ -918,7 +918,7 @@ function setTradeMarkers(trades) {
   const markers = [];
   numbered.forEach((t) => {
     markers.push({
-      time: toUnixTime(t.entry_time),
+      time: Math.floor(new Date(t.entry_time).getTime() / 1000),
       position: t.direction === "long" ? "belowBar" : "aboveBar",
       color: t.direction === "long" ? "#26a269" : "#d64545",
       shape: t.direction === "long" ? "arrowUp" : "arrowDown",
@@ -937,7 +937,7 @@ function setTradeMarkers(trades) {
       : `#${t.tradeNum} ${t.exit_reason} @ ${Number(t.exit_price).toFixed(2)}`;
 
     markers.push({
-      time: toUnixTime(t.exit_time),
+      time: Math.floor(new Date(t.exit_time).getTime() / 1000),
       position: t.direction === "long" ? "aboveBar" : "belowBar",
       color: pnlColor,
       shape: "circle",
