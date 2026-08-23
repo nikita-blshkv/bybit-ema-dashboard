@@ -10,7 +10,13 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-STATE_DIR = BASE_DIR / "state"
+
+# On Railway, a persistent volume is mounted (e.g. at /data) so that
+# state/*.json survives every redeploy. RAILWAY_VOLUME_MOUNT_PATH is set
+# automatically by Railway when a volume is attached. Locally (no volume),
+# this env var is unset, so it falls back to BASE_DIR/state as before.
+_VOLUME_MOUNT = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH")
+STATE_DIR = Path(_VOLUME_MOUNT) if _VOLUME_MOUNT else (BASE_DIR / "state")
 BACKTEST_DIR = BASE_DIR / "data" / "backtest"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
