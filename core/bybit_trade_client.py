@@ -134,11 +134,37 @@ def get_open_positions(category: str = "linear", settle_coin: str = "USDT") -> l
     return positions
 
 
+def set_isolated_margin(symbol: str, leverage: float, category: str = "linear"):
+    """Switch the symbol to ISOLATED margin mode (tradeMode=1) on Bybit,
+    instead of the account's default CROSS mode. Errors are swallowed if
+    the symbol is already isolated (retCode 110026) or if it can't be
+    changed while a position/order is open (retCode 110020) -- in that
+    case we keep whatever mode the existing position already has rather
+    than crashing the whole order flow."""
+    lev_str = str(leverage)
+    try:
+        _request("POST", "/v5/position/switch-isolated", body={
+            "category": category,
+            "symbol": symbol,
+            "tradeMode": 1,
+            "buyLeverage": lev_str,
+            "sellLeverage": lev_str,
+        })
+    except BybitApiError as exc:
+        if "110026" not in str(exc) and "110020" not in str(exc):
+            raise
+
+
 def set_leverage(symbol: str, leverage: float, category: str = "linear"):
     """Bybit requires leverage to be set (per symbol) before/with an order
     if it differs from what is already set. Errors here are swallowed by
     the caller if leverage is already at the requested value (Bybit
-    returns retCode 110043 'leverage not modified' in that case)."""
+    returns retCode 110043 'leverage not modified' in that case).
+
+    Also switches the symbol to ISOLATED margin mode first, so every new
+    position opens isolated instead of the account's default CROSS mode."""
+    set_isolated_margin(symbol, leverage, category=category)
+
     lev_str = str(leverage)
     try:
         _request("POST", "/v5/position/set-leverage", body={
