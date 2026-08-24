@@ -175,11 +175,19 @@ function getStrategyEmaPeriods() {
   };
 }
 
+function chartBarsForTf(tf) {
+  const hours = 100;
+  if (tf === "1m") return hours * 60;
+  if (tf === "5m") return hours * 12;
+  if (tf === "1h") return hours;
+  return 300;
+}
+
 async function refreshLiveEmaOverlay() {
   try {
     const { fast, slow } = getStrategyEmaPeriods();
 
-    const data1m = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=1m&n=300`);
+    const data1m = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=1m&n=${chartBarsForTf("1m")}`);
     const closes1m = data1m.candles.map((c) => c.close);
     const times1m = data1m.candles.map((c) => Math.floor(new Date(c.time).getTime() / 1000));
     const emaFast1m = computeEma(closes1m, fast);
@@ -187,7 +195,7 @@ async function refreshLiveEmaOverlay() {
     liveEmaFast1m.setData(times1m.map((t, i) => ({ time: t, value: emaFast1m[i] })));
     liveEmaSlow1m.setData(times1m.map((t, i) => ({ time: t, value: emaSlow1m[i] })));
 
-    const data5m = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=5m&n=300`);
+    const data5m = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=5m&n=${chartBarsForTf("5m")}`);
     const closes5m = data5m.candles.map((c) => c.close);
     const times5m = data5m.candles.map((c) => Math.floor(new Date(c.time).getTime() / 1000));
     const emaFast5m = computeEma(closes5m, fast);
@@ -201,7 +209,7 @@ async function refreshLiveEmaOverlay() {
 
 async function refreshCandles() {
   try {
-    const data = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=${currentTf}&n=300`);
+    const data = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=${currentTf}&n=${chartBarsForTf(currentTf)}`);
     const bars = data.candles.map((c) => ({
       time: Math.floor(new Date(c.time).getTime() / 1000),
       open: c.open,

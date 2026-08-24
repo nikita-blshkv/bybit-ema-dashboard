@@ -59,6 +59,17 @@ TIMEFRAMES = {
 
 CANDLES_PER_TIMEFRAME = 50  # how many candles the chart keeps/shows per symbol/timeframe
 
+# Fixed 100-hour lookback window shown on the chart, expressed as bar counts
+# per timeframe so 1m/5m/1h all cover the exact same wall-clock span. Also
+# drives startup backfill so a brand-new symbol has full chart context
+# immediately instead of waiting days for history to accumulate.
+CHART_LOOKBACK_HOURS = 100
+CHART_BARS_PER_TF = {
+    "1m": CHART_LOOKBACK_HOURS * 60,   # 6000 bars
+    "5m": CHART_LOOKBACK_HOURS * 12,   # 1200 bars
+    "1h": CHART_LOOKBACK_HOURS,        # 100 bars
+}
+
 # ---------------------------------------------------------------------------
 # Strategy defaults (identical to leverage_sweep_short_only.py)
 # ---------------------------------------------------------------------------

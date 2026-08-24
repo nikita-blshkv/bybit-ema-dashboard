@@ -26,6 +26,7 @@ from flask import Flask, jsonify, request, send_from_directory
 
 from core import config
 from core import data_store
+from core import bybit_client
 from core import live_engine
 from core import trade_journal
 from core import backtest_engine
@@ -69,7 +70,7 @@ def api_params():
 def api_candles():
     symbol = request.args.get("symbol", config.SYMBOLS[0])
     tf_label = request.args.get("tf", "1m")
-    n = int(request.args.get("n", config.CANDLES_PER_TIMEFRAME))
+    n = int(request.args.get("n", config.CHART_BARS_PER_TF.get(tf_label, config.CANDLES_PER_TIMEFRAME)))
 
     if symbol not in config.SYMBOLS:
         return jsonify({"error": f"unknown symbol {symbol}"}), 400
@@ -208,8 +209,10 @@ def api_backtest_progress():
 
 
 def _bootstrap_history():
-    """Make sure we have at least CANDLES_PER_TIMEFRAME candles before the
-    dashboard's first paint, so the chart is never empty on first load."""
+    """Make sure every symbol/timeframe has at least CANDLES_PER_TIMEFRAME
+    candles before the dashboard's first paint, so the chart is never empty
+    on first load. The deeper 100-hour backfill runs separately afterward
+    in a background thread so it never blocks/delays server startup."""
     for symbol in config.SYMBOLS:
         for tf_label, interval in config.TIMEFRAMES.items():
             try:
@@ -218,12 +221,45 @@ def _bootstrap_history():
                 print(f"[bootstrap] failed for {symbol} {tf_label}: {exc}")
 
 
+def _backfill_full_lookback():
+    """Runs in a background thread (non-blocking) to deepen every
+    symbol/timeframe's local history up to the full 100-hour lookback,
+    so chart + EMA overlay have consistent context on every timeframe."""
+    import time as _time
+    import pandas as _pd
+
+    for symbol in config.SYMBOLS:
+        for tf_label, interval in config.TIMEFRAMES.items():
+            min_bars = config.CHART_BARS_PER_TF.get(tf_label, config.CANDLES_PER_TIMEFRAME)
+            try:
+                df = data_store.load_history(symbol, tf_label)
+                if len(df) >= min_bars:
+                    continue
+                now_ms = int(_pd.Timestamp.utcnow().value // 1_000_000)
+                interval_ms = {"1": 60_000, "5": 5 * 60_000, "60": 60 * 60_000}.get(interval, 60_000)
+                start_ms = now_ms - min_bars * interval_ms
+                print(f"[backfill] {symbol} {tf_label}: {len(df)} -> target {min_bars} bars...")
+                backfilled = bybit_client.fetch_klines_range(symbol, interval, start_time_ms=start_ms, end_time_ms=now_ms)
+                if not backfilled.empty:
+                    merged = _pd.concat([df, backfilled]).sort_index()
+                    merged = merged[~merged.index.duplicated(keep="last")]
+                    data_store.save_history(symbol, tf_label, merged)
+                    print(f"[backfill] {symbol} {tf_label}: now {len(merged)} bars")
+                _time.sleep(0.2)
+            except Exception as exc:
+                print(f"[backfill] failed for {symbol} {tf_label}: {exc}")
+    print("[backfill] 100-hour lookback backfill complete for all symbols.")
+
+
 if __name__ == "__main__":
-    print("Bootstrapping candle history (BTCUSDT, ETHUSDT / 1m, 5m, 1h)...")
+    print("Bootstrapping candle history (all symbols / 1m, 5m, 1h)...")
     _bootstrap_history()
 
     print("Starting live engine background thread...")
     live_engine.start_background_thread()
+
+    print("Starting 100-hour lookback backfill in background thread...")
+    threading.Thread(target=_backfill_full_lookback, daemon=True).start()
 
     print("Dashboard: http://127.0.0.1:5000")
     port = int(os.environ.get("PORT", 5001))
