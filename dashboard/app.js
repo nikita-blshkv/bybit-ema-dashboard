@@ -439,11 +439,21 @@ async function refreshOpenPositions() {
     const body = document.getElementById("open-positions-body");
 
     if (!positions.length) {
-      body.innerHTML = `<tr class="empty-row"><td colspan="7">Нет открытых позиций</td></tr>`;
+      body.innerHTML = `<tr class="empty-row"><td colspan="8">Нет открытых позиций</td></tr>`;
       return;
     }
 
-    body.innerHTML = positions.map((p) => `
+    body.innerHTML = positions.map((p) => {
+      let syncCell;
+      if (p.exchange_synced === true) {
+        syncCell = `<span style="color:#4caf50;" title="Ордер подтверждён на бирже">✓ на бирже</span>`;
+      } else if (p.exchange_synced === false) {
+        const errText = (p.exchange_error || "ошибка").replace(/"/g, "&quot;");
+        syncCell = `<span style="color:#e05252; cursor:help;" title="${errText}">✗ только в дашборде</span>`;
+      } else {
+        syncCell = `<span style="color:#8b93a3;">—</span>`;
+      }
+      return `
       <tr>
         <td>${p.symbol}</td>
         <td class="${p.direction === 'long' ? 'pos-long' : 'pos-short'}">${p.direction.toUpperCase()}</td>
@@ -452,7 +462,9 @@ async function refreshOpenPositions() {
         <td>${Number(p.tp_pct).toFixed(2)}%</td>
         <td>${Number(p.sl_pct).toFixed(2)}%</td>
         <td>${Number(p.notional).toFixed(0)}</td>
-      </tr>`).join("");
+        <td>${syncCell}</td>
+      </tr>`;
+    }).join("");
   } catch (e) {
     console.error("refreshOpenPositions failed", e);
   }

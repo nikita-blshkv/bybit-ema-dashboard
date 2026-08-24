@@ -134,6 +134,12 @@ def get_open_positions(category: str = "linear", settle_coin: str = "USDT") -> l
     return positions
 
 
+# Bybit retCode values meaning "the thing you asked for is already true"
+# rather than a real failure -- these must never abort order placement.
+_BENIGN_MARGIN_CODES = ("110026", "110020")  # already isolated / position open
+_BENIGN_LEVERAGE_CODES = ("110043",)          # leverage not modified
+
+
 def set_isolated_margin(symbol: str, leverage: float, category: str = "linear"):
     """Switch the symbol to ISOLATED margin mode (tradeMode=1) on Bybit,
     instead of the account's default CROSS mode. Errors are swallowed if
@@ -151,15 +157,15 @@ def set_isolated_margin(symbol: str, leverage: float, category: str = "linear"):
             "sellLeverage": lev_str,
         })
     except BybitApiError as exc:
-        if "110026" not in str(exc) and "110020" not in str(exc):
+        if not any(code in str(exc) for code in _BENIGN_MARGIN_CODES):
             raise
 
 
 def set_leverage(symbol: str, leverage: float, category: str = "linear"):
     """Bybit requires leverage to be set (per symbol) before/with an order
-    if it differs from what is already set. Errors here are swallowed by
-    the caller if leverage is already at the requested value (Bybit
-    returns retCode 110043 'leverage not modified' in that case).
+    if it differs from what is already set. Errors here are swallowed
+    directly in THIS function if leverage is already at the requested
+    value (Bybit returns retCode 110043 'leverage not modified').
 
     Also switches the symbol to ISOLATED margin mode first, so every new
     position opens isolated instead of the account's default CROSS mode."""
@@ -174,7 +180,7 @@ def set_leverage(symbol: str, leverage: float, category: str = "linear"):
             "sellLeverage": lev_str,
         })
     except BybitApiError as exc:
-        if "110043" not in str(exc):
+        if not any(code in str(exc) for code in _BENIGN_LEVERAGE_CODES):
             raise
 
 

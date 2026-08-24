@@ -200,12 +200,12 @@ def _try_open_new_positions(params: dict, signals: dict, latest_close: dict):
             "ema_fast": int(params["ema_fast"]),
             "ema_slow": int(params["ema_slow"]),
         }
-        trade_journal.add_open_position(position)
-        open_positions.append(position)
-
         # Mirror the paper position with a REAL market order + exchange-
         # side TP/SL on the Bybit demo account, so it keeps resolving on
-        # Bybit's own servers even if this computer goes offline.
+        # Bybit's own servers even if this computer goes offline. The
+        # outcome (success/failure/reason) is stamped onto the position
+        # itself BEFORE it's saved, so the dashboard can show a clear
+        # sync status instead of silently drifting from the exchange.
         try:
             qty_step = live_trade.get_instrument_qty_step(symbol)
             raw_qty = notional / float(price)
@@ -225,13 +225,23 @@ def _try_open_new_positions(params: dict, signals: dict, latest_close: dict):
                 symbol=symbol, direction=direction, qty=qty_str,
                 take_profit_price=tp_price, stop_loss_price=sl_price,
             )
+            position["exchange_synced"] = True
+            position["exchange_error"] = None
             print(f"[live_engine] placed REAL demo order: {symbol} {direction} qty={qty_str}")
         except BybitAuthError:
-            pass  # keys not configured yet -- paper-only mode, silent
+            position["exchange_synced"] = False
+            position["exchange_error"] = "API-ключи не настроены"
         except BybitApiError as exc:
+            position["exchange_synced"] = False
+            position["exchange_error"] = str(exc)
             print(f"[live_engine] demo order FAILED for {symbol}: {exc}")
         except Exception as exc:
+            position["exchange_synced"] = False
+            position["exchange_error"] = str(exc)
             print(f"[live_engine] unexpected error placing demo order for {symbol}: {exc}")
+
+        trade_journal.add_open_position(position)
+        open_positions.append(position)
 
 
 
