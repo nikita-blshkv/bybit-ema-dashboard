@@ -218,6 +218,12 @@ async function refreshCandles() {
       close: c.close,
     }));
     liveCandleSeries.setData(bars);
+
+    const lastClose = bars.length ? bars[bars.length - 1].close : null;
+    const precision = (lastClose !== null && lastClose < 1) ? 4 : 2;
+    const minMove = precision === 4 ? 0.0001 : 0.01;
+    liveCandleSeries.applyOptions({ priceFormat: { type: "price", precision, minMove } });
+
     refreshLiveEmaOverlay();
     refreshLiveTradeMarkers();
   } catch (e) {
@@ -381,6 +387,20 @@ async function refreshStatus() {
         l.classList.toggle("checked", l.dataset.val === p.direction);
       });
     }
+
+    const pnlEl = document.getElementById("stat-pnl");
+    if (pnlEl && state.net_pnl_after_fees_usdt !== undefined) {
+      pnlEl.textContent = fmtUsd(state.net_pnl_after_fees_usdt);
+      pnlEl.className = "value " + (state.net_pnl_after_fees_usdt >= 0 ? "pos" : "neg");
+    }
+    const feeGrossEl = document.getElementById("stat-fee-gross");
+    if (feeGrossEl && state.fee_gross_usdt !== undefined) {
+      feeGrossEl.textContent = fmtUsd(state.fee_gross_usdt);
+    }
+    const rebateEl = document.getElementById("stat-rebate");
+    if (rebateEl && state.rebate_usdt !== undefined) {
+      rebateEl.textContent = fmtUsd(state.rebate_usdt);
+    }
   } catch (e) {
     console.error("refreshStatus failed", e);
   }
@@ -400,12 +420,15 @@ async function refreshLivePositions() {
       return;
     }
 
+    const equityEl = document.getElementById("stat-equity");
     if (data.balance && data.balance.total_equity !== null) {
       badge.textContent = `Equity: ${Number(data.balance.total_equity).toFixed(2)} USDT`;
       badge.className = "balance-badge balance-on";
+      if (equityEl) equityEl.textContent = fmtUsd(data.balance.total_equity);
     } else {
       badge.textContent = "Подключено";
       badge.className = "balance-badge balance-on";
+      if (equityEl) equityEl.textContent = "—";
     }
 
     if (!data.positions || !data.positions.length) {

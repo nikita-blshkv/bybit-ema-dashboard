@@ -44,6 +44,12 @@ def index():
 @app.route("/api/status", methods=["GET"])
 def api_status():
     state = live_engine.load_engine_state()
+    state = dict(state)
+    fee_totals = trade_journal.get_fee_totals()
+    state["fee_gross_usdt"] = fee_totals["fee_gross_usdt"]
+    state["rebate_usdt"] = fee_totals["rebate_usdt"]
+    state["fee_net_usdt"] = fee_totals["fee_net_usdt"]
+    state["net_pnl_after_fees_usdt"] = trade_journal.get_net_pnl_after_fees()
     return jsonify(state)
 
 

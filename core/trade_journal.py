@@ -56,6 +56,7 @@ TRADE_LOG_FIELDS = [
     "id", "symbol", "direction", "entry_time", "exit_time",
     "entry_price", "exit_price", "margin", "leverage", "notional",
     "tp_pct", "sl_pct", "exit_reason", "pnl_pct", "pnl_usdt",
+    "fee_gross_usdt", "rebate_usdt", "fee_net_usdt", "pnl_after_fees_usdt",
     "ema_fast", "ema_slow", "closed_at",
 ]
 
@@ -68,10 +69,32 @@ def _ensure_trade_log_header():
             writer.writeheader()
 
 
+def compute_fees(notional: float) -> dict:
+    """Taker fee is charged on both entry AND exit (two market fills), then
+    a rebate percentage of that gross fee is returned to the account. The
+    NET fee (what actually erodes PnL) is the gross fee minus the rebate.
+    All percentages come from config so they stay in sync with the sweep
+    scripts and can be tuned per-account later without touching this math.
+    """
+    fee_pct = config.DEFAULT_TAKER_FEE_PCT / 100.0
+    rebate_pct = config.DEFAULT_REBATE_PCT / 100.0
+    fee_gross = notional * fee_pct * 2.0   # entry + exit, both taker market fills
+    rebate = fee_gross * rebate_pct
+    fee_net = fee_gross - rebate
+    return {"fee_gross_usdt": fee_gross, "rebate_usdt": rebate, "fee_net_usdt": fee_net}
+
+
 def append_closed_trade(trade: dict):
     _ensure_trade_log_header()
     trade = dict(trade)
     trade.setdefault("closed_at", _now_iso())
+
+    fees = compute_fees(float(trade.get("notional", 0) or 0))
+    trade.setdefault("fee_gross_usdt", fees["fee_gross_usdt"])
+    trade.setdefault("rebate_usdt", fees["rebate_usdt"])
+    trade.setdefault("fee_net_usdt", fees["fee_net_usdt"])
+    trade.setdefault("pnl_after_fees_usdt", float(trade.get("pnl_usdt", 0) or 0) - fees["fee_net_usdt"])
+
     path = config.TRADE_LOG_FILE
     with open(path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=TRADE_LOG_FIELDS)
@@ -125,3 +148,35 @@ def get_current_equity():
     if rows:
         return float(rows[-1]["equity"])
     return config.DEFAULT_INITIAL_EQUITY
+
+
+def get_fee_totals():
+    """Sums fee_gross_usdt / rebate_usdt / fee_net_usdt across the entire
+    closed trade log, so the dashboard can show accumulated commissions
+    and accumulated rebate as running totals, not just per-trade."""
+    rows = load_trade_log(limit=100000)
+    fee_gross = 0.0
+    rebate = 0.0
+    fee_net = 0.0
+    for r in rows:
+        fee_gross += float(r.get("fee_gross_usdt") or 0)
+        rebate += float(r.get("rebate_usdt") or 0)
+        fee_net += float(r.get("fee_net_usdt") or 0)
+    return {"fee_gross_usdt": fee_gross, "rebate_usdt": rebate, "fee_net_usdt": fee_net}
+
+
+def get_net_pnl_after_fees():
+    """Sums pnl_after_fees_usdt across the closed trade log (falls back to
+    pnl_usdt minus a freshly computed fee for legacy rows that predate the
+    fee columns, so old trades don't show as zero)."""
+    rows = load_trade_log(limit=100000)
+    total = 0.0
+    for r in rows:
+        raw = r.get("pnl_after_fees_usdt")
+        if raw not in (None, ""):
+            total += float(raw)
+        else:
+            pnl = float(r.get("pnl_usdt") or 0)
+            fees = compute_fees(float(r.get("notional") or 0))
+            total += pnl - fees["fee_net_usdt"]
+    return total
