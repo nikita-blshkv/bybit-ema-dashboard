@@ -162,15 +162,18 @@ def set_isolated_margin(symbol: str, leverage: float, category: str = "linear"):
 
 
 def set_leverage(symbol: str, leverage: float, category: str = "linear"):
-    """Bybit requires leverage to be set (per symbol) before/with an order
-    if it differs from what is already set. Errors here are swallowed
-    directly in THIS function if leverage is already at the requested
-    value (Bybit returns retCode 110043 'leverage not modified').
+    """Set leverage for a symbol WITHOUT touching margin mode.
 
-    Also switches the symbol to ISOLATED margin mode first, so every new
-    position opens isolated instead of the account's default CROSS mode."""
-    set_isolated_margin(symbol, leverage, category=category)
+    Margin mode (isolated/cross) is left exactly as configured on Bybit
+    itself -- changing it there applies to all future positions on that
+    account, so this client no longer forces isolated mode. Forcing it
+    here was a second point of failure that could silently block real
+    order placement (position saved locally with exchange_synced=False
+    even though the actual blocker was the margin-mode switch, not the
+    order itself).
 
+    A "leverage not modified" response (110043) is benign and must not
+    prevent order placement."""
     lev_str = str(leverage)
     try:
         _request("POST", "/v5/position/set-leverage", body={

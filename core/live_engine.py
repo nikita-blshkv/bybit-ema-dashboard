@@ -212,7 +212,14 @@ def _try_open_new_positions(params: dict, signals: dict, latest_close: dict):
             qty = max(qty_step, round(raw_qty / qty_step) * qty_step)
             qty_str = f"{qty:.8f}".rstrip("0").rstrip(".") or "0"
 
-            live_trade.set_leverage(symbol, leverage)
+            try:
+                live_trade.set_leverage(symbol, leverage)
+            except BybitApiError as exc:
+                # Leverage-setting failures (e.g. rate limit, transient
+                # error) must never block real order placement -- log and
+                # continue with whatever leverage is already configured
+                # on the account for this symbol.
+                print(f"[live_engine] set_leverage failed for {symbol} (continuing anyway): {exc}")
 
             if direction == "long":
                 tp_price = float(price) * (1.0 + position["tp_pct"] / 100.0)
@@ -229,17 +236,19 @@ def _try_open_new_positions(params: dict, signals: dict, latest_close: dict):
             position["exchange_error"] = None
             print(f"[live_engine] placed REAL demo order: {symbol} {direction} qty={qty_str}")
         except BybitAuthError:
-            position["exchange_synced"] = False
-            position["exchange_error"] = "API-ключи не настроены"
+            print(f"[live_engine] SKIPPED signal for {symbol}: API keys not configured, "
+                  f"live trading disabled -- no local position created.")
+            continue
         except BybitApiError as exc:
-            position["exchange_synced"] = False
-            position["exchange_error"] = str(exc)
-            print(f"[live_engine] demo order FAILED for {symbol}: {exc}")
+            print(f"[live_engine] SKIPPED signal for {symbol}: demo order REJECTED by "
+                  f"exchange ({exc}) -- no local position created, will retry next signal.")
+            continue
         except Exception as exc:
-            position["exchange_synced"] = False
-            position["exchange_error"] = str(exc)
-            print(f"[live_engine] unexpected error placing demo order for {symbol}: {exc}")
+            print(f"[live_engine] SKIPPED signal for {symbol}: unexpected error placing "
+                  f"demo order ({exc}) -- no local position created.")
+            continue
 
+        # Reached only if the real order was confirmed by Bybit.
         trade_journal.add_open_position(position)
         open_positions.append(position)
 
