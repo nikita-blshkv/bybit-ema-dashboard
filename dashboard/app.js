@@ -518,17 +518,10 @@ async function refreshTradeLog() {
       </tr>`).join("");
     body.innerHTML = rows;
 
-    // update equity stat cards from the last known equity curve point
-    const equityCurve = await apiGet("/api/equity_curve?limit=1");
-    if (equityCurve.length) {
-      const last = equityCurve[equityCurve.length - 1];
-      const eq = parseFloat(last.equity);
-      const pnl = eq - 100000; // fallback baseline if initial equity unknown here
-      document.getElementById("stat-equity").textContent = eq.toFixed(2);
-      const pnlEl = document.getElementById("stat-pnl");
-      pnlEl.textContent = fmtUsd(pnl);
-      pnlEl.className = "value " + (pnl >= 0 ? "pos" : "neg");
-    }
+    // Equity and Net PnL must have one source of truth only:
+    // - stat-equity is set from Bybit totalEquity in refreshLivePositions()
+    // - stat-pnl is set from fee-aware /api/status in refreshStatus().
+    // Do not overwrite either with local paper equity-curve data here.
   } catch (e) {
     console.error("refreshTradeLog failed", e);
   }
