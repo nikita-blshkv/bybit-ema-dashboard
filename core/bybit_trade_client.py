@@ -61,6 +61,18 @@ def _request(method: str, path: str, params: dict = None, body: dict = None):
 
     if method == "GET":
         params = params or {}
+        # IMPORTANT: the exact same query-string ordering must be used both
+        # for computing the signature AND for the literal bytes sent on
+        # the wire. Previously this used sorted(params.items()) to build
+        # the string that gets signed, but passed the *original* dict to
+        # requests.get(url, params=params, ...) -- and requests serializes
+        # dict params in INSERTION order, not sorted order. Whenever a
+        # call site passed params in a non-alphabetical order (e.g.
+        # category, symbol, limit), the signed string and the actual sent
+        # string diverged and Bybit rejected the request with retCode
+        # 10004 ("Error sign"). Building one canonical query string up
+        # front and using it for both the signature AND the request URL
+        # makes this impossible to get out of sync again.
         query = "&".join(f"{k}={v}" for k, v in sorted(params.items()))
         signature = _sign(query, timestamp, recv_window)
         headers = {
@@ -69,7 +81,7 @@ def _request(method: str, path: str, params: dict = None, body: dict = None):
             "X-BAPI-RECV-WINDOW": recv_window,
             "X-BAPI-SIGN": signature,
         }
-        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        resp = requests.get(f"{url}?{query}", headers=headers, timeout=15)
     else:
         body = body or {}
         body_str = json.dumps(body)
