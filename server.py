@@ -261,6 +261,12 @@ if __name__ == "__main__":
     print("Bootstrapping candle history (all symbols / 1m, 5m, 1h)...")
     _bootstrap_history()
 
+    print("Backfilling trade journal from exchange closed-pnl history...")
+    try:
+        live_engine.backfill_trade_log_from_exchange()
+    except Exception as exc:
+        print(f"[startup] exchange backfill failed, continuing anyway: {exc}")
+
     print("Starting live engine background thread...")
     live_engine.start_background_thread()
 

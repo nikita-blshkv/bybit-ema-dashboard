@@ -223,3 +223,74 @@ def get_instrument_qty_step(symbol: str, category: str = "linear") -> float:
         return 0.001
     step = rows[0].get("lotSizeFilter", {}).get("qtyStep", "0.001")
     return float(step)
+
+
+# ---------------------------------------------------------------------------
+# NEW: fetch the exchange's own record of a closed position (realized PnL,
+# actual exit price, actual fee paid). This replaces local high/low TP/SL
+# simulation as the source of truth for the trade journal.
+# ---------------------------------------------------------------------------
+
+def get_closed_pnl(symbol: str, limit: int = 5) -> list:
+    """
+    Returns Bybit's own realized-PnL records for a symbol, most recent
+    first. Each record already contains the REAL exit price, REAL closed
+    PnL, and the exact open/close timestamps as computed by the exchange
+    itself -- no local simulation involved.
+
+    Uses GET /v5/position/closed-pnl (category=linear).
+    """
+    result = _request("GET", "/v5/position/closed-pnl", params={
+        "category": "linear",
+        "symbol": symbol,
+        "limit": str(limit),
+    })
+    rows = result.get("list", [])
+    records = []
+    for r in rows:
+        records.append({
+            "symbol": r.get("symbol"),
+            "direction": "long" if r.get("side") == "Sell" else "short",
+            # NOTE: Bybit's closedPnl "side" is the CLOSING order side, so
+            # a long position that gets closed shows side="Sell" (and vice
+            # versa) -- it is the OPPOSITE of the position's own direction.
+            "qty": float(r.get("qty", 0) or 0),
+            "entry_price": float(r.get("avgEntryPrice", 0) or 0),
+            "exit_price": float(r.get("avgExitPrice", 0) or 0),
+            "closed_pnl": float(r.get("closedPnl", 0) or 0),
+            "leverage": float(r.get("leverage", 0) or 0),
+            "created_time": r.get("createdTime"),   # position opened (ms epoch str)
+            "updated_time": r.get("updatedTime"),   # position closed  (ms epoch str)
+            "exec_type": r.get("execType", ""),      # e.g. "Trade", "BustTrade"
+            "fill_count": r.get("fillCount"),
+        })
+    return records
+
+
+def get_executions(symbol: str, limit: int = 10) -> list:
+    """
+    Returns the exchange's own execution (fill) records for a symbol, most
+    recent first -- used to pull the REAL commission (fee) paid per fill,
+    since /v5/position/closed-pnl does not include fee breakdown.
+
+    Uses GET /v5/execution/list (category=linear).
+    """
+    result = _request("GET", "/v5/execution/list", params={
+        "category": "linear",
+        "symbol": symbol,
+        "limit": str(limit),
+    })
+    rows = result.get("list", [])
+    records = []
+    for r in rows:
+        records.append({
+            "symbol": r.get("symbol"),
+            "side": r.get("side"),
+            "exec_price": float(r.get("execPrice", 0) or 0),
+            "exec_qty": float(r.get("execQty", 0) or 0),
+            "exec_fee": float(r.get("execFee", 0) or 0),
+            "exec_time": r.get("execTime"),
+            "order_id": r.get("orderId"),
+            "closed_size": float(r.get("closedSize", 0) or 0),
+        })
+    return records

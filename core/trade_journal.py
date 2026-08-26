@@ -57,7 +57,7 @@ TRADE_LOG_FIELDS = [
     "entry_price", "exit_price", "margin", "leverage", "notional",
     "tp_pct", "sl_pct", "exit_reason", "pnl_pct", "pnl_usdt",
     "fee_gross_usdt", "rebate_usdt", "fee_net_usdt", "pnl_after_fees_usdt",
-    "ema_fast", "ema_slow", "closed_at",
+    "ema_fast", "ema_slow", "closed_at", "source",
 ]
 
 

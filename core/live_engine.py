@@ -93,17 +93,193 @@ def update_params(new_params: dict):
     return state
 
 
+# ---------------------------------------------------------------------------
+# REPLACEMENT for _check_and_close_open_positions().
+#
+# NEW BEHAVIOR (per user's explicit request):
+#   1. For every locally tracked open position, ask the EXCHANGE itself
+#      whether it is still open (GET /v5/position/list).
+#   2. If the exchange no longer lists it as open -> it was closed (by TP,
+#      SL, or manually). Query GET /v5/position/closed-pnl to get the
+#      REAL exit price and REAL realized PnL as computed by Bybit, and
+#      GET /v5/execution/list to get the REAL fee paid on entry+exit.
+#   3. Write that exchange-verified record into trade_journal, update
+#      equity from the REAL number, and drop the position from
+#      open_positions.json.
+#   4. If API keys are not configured (pure paper mode, no live_trade
+#      available) -> fall back to the OLD local high/low TP/SL simulation
+#      exactly as before, so paper-only usage keeps working unchanged.
+#
+# This makes the exchange the single source of truth. No more locally
+# "guessing" that a position closed from candle high/low.
+# ---------------------------------------------------------------------------
+
+def _find_matching_closed_pnl(records: list, position: dict):
+    """Pick the closed-pnl record that corresponds to THIS local position.
+
+    Bybit's createdTime on a closed-pnl record is when the position was
+    OPENED (ms epoch string). We match on the record whose createdTime is
+    closest to (but not much earlier than) our local entry_time, and whose
+    direction matches. This is robust even if the account has since opened
+    other positions on the same symbol.
+    """
+    from datetime import datetime, timezone
+
+    try:
+        local_entry_dt = datetime.fromisoformat(position["entry_time"])
+        if local_entry_dt.tzinfo is None:
+            local_entry_dt = local_entry_dt.replace(tzinfo=timezone.utc)
+        local_entry_ms = int(local_entry_dt.timestamp() * 1000)
+    except Exception:
+        local_entry_ms = None
+
+    best = None
+    best_diff = None
+    for rec in records:
+        if rec["direction"] != position["direction"]:
+            continue
+        try:
+            rec_created_ms = int(rec["created_time"])
+        except (TypeError, ValueError):
+            continue
+        if local_entry_ms is not None:
+            diff = abs(rec_created_ms - local_entry_ms)
+        else:
+            diff = 0
+        if best is None or diff < best_diff:
+            best = rec
+            best_diff = diff
+    return best
+
+
+def _sum_real_fees(symbol: str, since_ms: int) -> float:
+    """Sum REAL exec fees (entry + exit fills) for a symbol since a given
+    timestamp (ms epoch), straight from the exchange's own execution log.
+    Returns 0.0 on any failure (fees are a nice-to-have, must never block
+    journaling the trade itself)."""
+    try:
+        execs = live_trade.get_executions(symbol, limit=20)
+    except Exception as exc:
+        print(f"[live_engine] could not fetch executions for {symbol} fee lookup: {exc}")
+        return 0.0
+
+    total_fee = 0.0
+    for ex in execs:
+        try:
+            if int(ex["exec_time"]) >= since_ms:
+                total_fee += ex["exec_fee"]
+        except (TypeError, ValueError, KeyError):
+            continue
+    return total_fee
+
+
 def _check_and_close_open_positions(latest_prices: dict):
-    """latest_prices: {symbol: {"high": x, "low": y, "close": z, "time": iso}}"""
+    """latest_prices: {symbol: {"high": x, "low": y, "close": z, "time": iso}}
+
+    Exchange-verified close detection (see module docstring above for the
+    full flow). Falls back to local TP/SL simulation only when live_trade
+    is unavailable (no API keys configured -- pure paper mode).
+    """
     positions = trade_journal.load_open_positions()
     if not positions:
         return
 
+    keys_configured = live_trade._keys_configured()
+
     still_open = []
     equity = trade_journal.get_current_equity()
 
+    # Fetch the exchange's current open-position list ONCE per tick (not
+    # once per local position) to keep this cheap and rate-limit friendly.
+    exchange_open_symbols = set()
+    if keys_configured:
+        try:
+            for p in live_trade.get_open_positions():
+                exchange_open_symbols.add((p["symbol"], p["direction"]))
+        except Exception as exc:
+            print(f"[live_engine] could not fetch exchange open positions, "
+                  f"falling back to local simulation this tick: {exc}")
+            keys_configured = False  # degrade gracefully for this tick only
+
     for pos in positions:
         symbol = pos["symbol"]
+
+        if keys_configured:
+            still_on_exchange = (symbol, pos["direction"]) in exchange_open_symbols
+            if still_on_exchange:
+                still_open.append(pos)
+                continue
+
+            # Not open on the exchange anymore -> it was closed. Pull the
+            # REAL closed-pnl record to journal it with real numbers.
+            try:
+                records = live_trade.get_closed_pnl(symbol, limit=10)
+                match = _find_matching_closed_pnl(records, pos)
+            except Exception as exc:
+                print(f"[live_engine] {symbol} looks closed on exchange but "
+                      f"closed-pnl lookup failed ({exc}) -- will retry next tick.")
+                still_open.append(pos)
+                continue
+
+            if match is None:
+                # Exchange says it's closed, but no matching closed-pnl
+                # record yet (Bybit can take a moment to publish it after
+                # the fill). Keep it open locally and retry next tick
+                # instead of losing the trade.
+                print(f"[live_engine] {symbol} closed on exchange but no "
+                      f"closed-pnl record found yet -- retrying next tick.")
+                still_open.append(pos)
+                continue
+
+            exit_price = match["exit_price"]
+            pnl_usdt = match["closed_pnl"]
+            notional = pos["notional"]
+            pnl_pct = (pnl_usdt / notional * 100.0) if notional else 0.0
+
+            entry_price = pos["entry_price"]
+            if pos["direction"] == "long":
+                exit_reason = "TP" if exit_price >= entry_price else "SL"
+            else:
+                exit_reason = "TP" if exit_price <= entry_price else "SL"
+
+            try:
+                since_ms = int(match["created_time"])
+            except (TypeError, ValueError):
+                since_ms = 0
+            real_fee = _sum_real_fees(symbol, since_ms)
+
+            exit_time_iso = latest_prices.get(symbol, {}).get("time") or _now_iso()
+
+            equity += pnl_usdt
+
+            trade_journal.append_closed_trade({
+                "id": pos["id"],
+                "symbol": symbol,
+                "direction": pos["direction"],
+                "entry_time": pos["entry_time"],
+                "exit_time": exit_time_iso,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "margin": pos["margin"],
+                "leverage": pos["leverage"],
+                "notional": notional,
+                "tp_pct": pos["tp_pct"],
+                "sl_pct": pos["sl_pct"],
+                "exit_reason": exit_reason,
+                "pnl_pct": pnl_pct,
+                "pnl_usdt": pnl_usdt,
+                "fee_net_usdt": real_fee,
+                "pnl_after_fees_usdt": pnl_usdt - real_fee,
+                "ema_fast": pos.get("ema_fast", ""),
+                "ema_slow": pos.get("ema_slow", ""),
+                "source": "exchange",  # marks this row as exchange-verified
+            })
+            trade_journal.append_equity_point(exit_time_iso, equity, pnl_usdt, pos["id"])
+            print(f"[live_engine] {symbol} closed on exchange, journaled from "
+                  f"real closed-pnl: exit={exit_price} pnl={pnl_usdt:.2f} fee={real_fee:.4f}")
+            continue
+
+        # --- Fallback: local high/low TP/SL simulation (paper mode only) ---
         price_info = latest_prices.get(symbol)
         if price_info is None:
             still_open.append(pos)
@@ -158,10 +334,119 @@ def _check_and_close_open_positions(latest_prices: dict):
                 "pnl_usdt": pnl_usdt,
                 "ema_fast": pos.get("ema_fast", ""),
                 "ema_slow": pos.get("ema_slow", ""),
+                "source": "paper_simulated",
             })
             trade_journal.append_equity_point(price_info["time"], equity, pnl_usdt, pos["id"])
         else:
             still_open.append(pos)
+
+    trade_journal.save_open_positions(still_open)
+
+
+# ---------------------------------------------------------------------------
+# NEW: one-time startup backfill so the trade journal is populated from the
+# exchange's own closed-pnl history immediately on boot/deploy, instead of
+# waiting for the next live signal to close a NEW trade before anything
+# shows up in the journal again.
+#
+# Call backfill_trade_log_from_exchange() once from server.py's
+# `if __name__ == "__main__":` block, in a daemon thread (same pattern as
+# the existing candle-history backfill), BEFORE start_background_thread().
+# ---------------------------------------------------------------------------
+
+def backfill_trade_log_from_exchange(lookback_records: int = 50):
+    """Pull recent closed-pnl history straight from Bybit for every symbol
+    in config.SYMBOLS and insert any trades that are not already present
+    in the local trade_log.csv (matched by symbol + entry_time + exit
+    time, since Bybit does not give us a stable natural key we already
+    store). Safe to call on every boot -- fully idempotent, never creates
+    duplicate rows.
+
+    Never raises: if API keys are not configured, or any network call
+    fails, this simply logs and returns -- it must never block server
+    startup.
+    """
+    if not live_trade._keys_configured():
+        print("[backfill_trade_log] API keys not configured, skipping exchange backfill.")
+        return
+
+    existing = trade_journal.load_trade_log(limit=100000)
+    existing_keys = set()
+    for row in existing:
+        existing_keys.add((
+            row.get("symbol"),
+            row.get("entry_price"),
+            row.get("exit_price"),
+            row.get("exit_time"),
+        ))
+
+    equity = trade_journal.get_current_equity()
+    inserted = 0
+
+    for symbol in config.SYMBOLS:
+        try:
+            records = live_trade.get_closed_pnl(symbol, limit=lookback_records)
+        except Exception as exc:
+            print(f"[backfill_trade_log] {symbol}: closed-pnl fetch failed, skipping: {exc}")
+            continue
+
+        # Oldest first, so equity accumulates in correct chronological order.
+        records = sorted(records, key=lambda r: int(r.get("created_time") or 0))
+
+        for rec in records:
+            try:
+                created_ms = int(rec["created_time"])
+                updated_ms = int(rec["updated_time"])
+            except (TypeError, ValueError):
+                continue
+
+            entry_time_iso = datetime.fromtimestamp(created_ms / 1000, tz=timezone.utc).isoformat()
+            exit_time_iso = datetime.fromtimestamp(updated_ms / 1000, tz=timezone.utc).isoformat()
+            entry_price = rec["entry_price"]
+            exit_price = rec["exit_price"]
+
+            key = (symbol, entry_price, exit_price, exit_time_iso)
+            if key in existing_keys:
+                continue  # already journaled, do not duplicate
+
+            pnl_usdt = rec["closed_pnl"]
+            notional = entry_price * rec["qty"] if entry_price else 0.0
+            pnl_pct = (pnl_usdt / notional * 100.0) if notional else 0.0
+            exit_reason = "TP" if (
+                (rec["direction"] == "long" and exit_price >= entry_price) or
+                (rec["direction"] == "short" and exit_price <= entry_price)
+            ) else "SL"
+
+            real_fee = _sum_real_fees(symbol, created_ms)
+
+            trade_journal.append_closed_trade({
+                "id": f"backfill-{symbol}-{created_ms}",
+                "symbol": symbol,
+                "direction": rec["direction"],
+                "entry_time": entry_time_iso,
+                "exit_time": exit_time_iso,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "margin": notional / rec["leverage"] if rec["leverage"] else 0.0,
+                "leverage": rec["leverage"],
+                "notional": notional,
+                "tp_pct": "",
+                "sl_pct": "",
+                "exit_reason": exit_reason,
+                "pnl_pct": pnl_pct,
+                "pnl_usdt": pnl_usdt,
+                "fee_net_usdt": real_fee,
+                "pnl_after_fees_usdt": pnl_usdt - real_fee,
+                "ema_fast": "",
+                "ema_slow": "",
+                "source": "exchange_backfill",
+            })
+            equity += pnl_usdt
+            trade_journal.append_equity_point(exit_time_iso, equity, pnl_usdt, key[0] + str(created_ms))
+            existing_keys.add(key)
+            inserted += 1
+
+    print(f"[backfill_trade_log] done -- inserted {inserted} historical trade(s) from exchange.")
 
     trade_journal.save_open_positions(still_open)
 
