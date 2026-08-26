@@ -4,10 +4,22 @@ Persistent trade journal + open-position storage.
 Everything is stored as plain JSON/CSV on disk so the Flask server, the
 live engine process, and the dashboard all agree on the same source of
 truth, and so nothing is lost across restarts.
+
+RELIABILITY NOTE (added after a real production incident): all writes
+to trade_log.csv and equity_curve.csv now go through an exclusive file
+lock (fcntl.flock) so the startup backfill thread and the live-engine
+background thread can never interleave writes and corrupt a row (which
+previously caused a column-count mismatch and crashed /api/trade_log
+with a TypeError when Flask tried to JSON-encode the malformed rows).
+load_trade_log() is also now defensive: any row that doesn't match the
+expected column count is skipped (and logged) instead of propagating a
+broken dict all the way to the JSON encoder and crashing the endpoint.
 """
 
 import json
 import csv
+import fcntl
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -16,6 +28,34 @@ from . import config
 
 def _now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+class _locked_file:
+    """Context manager: opens a file and holds an exclusive OS-level lock
+    (fcntl.flock) for the duration of the block, so concurrent threads/
+    processes writing to the same CSV can never interleave partial rows.
+    Blocks (waits) rather than failing if another writer currently holds
+    the lock -- writes here are tiny and infrequent, so this never stalls
+    noticeably."""
+
+    def __init__(self, path, mode):
+        self.path = path
+        self.mode = mode
+        self.f = None
+
+    def __enter__(self):
+        self.f = open(self.path, self.mode, newline="", encoding="utf-8")
+        fcntl.flock(self.f.fileno(), fcntl.LOCK_EX)
+        return self.f
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            self.f.flush()
+            os.fsync(self.f.fileno())
+        finally:
+            fcntl.flock(self.f.fileno(), fcntl.LOCK_UN)
+            self.f.close()
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -27,13 +67,23 @@ def load_open_positions():
     if not path.exists():
         return []
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+            return json.load(f)
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def save_open_positions(positions):
     path = config.OPEN_POSITIONS_FILE
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(positions, f, indent=2, ensure_ascii=False)
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            json.dump(positions, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 def add_open_position(position: dict):
@@ -64,7 +114,7 @@ TRADE_LOG_FIELDS = [
 def _ensure_trade_log_header():
     path = config.TRADE_LOG_FILE
     if not path.exists():
-        with open(path, "w", newline="", encoding="utf-8") as f:
+        with _locked_file(path, "w") as f:
             writer = csv.DictWriter(f, fieldnames=TRADE_LOG_FIELDS)
             writer.writeheader()
 
@@ -96,18 +146,49 @@ def append_closed_trade(trade: dict):
     trade.setdefault("pnl_after_fees_usdt", float(trade.get("pnl_usdt", 0) or 0) - fees["fee_net_usdt"])
 
     path = config.TRADE_LOG_FILE
-    with open(path, "a", newline="", encoding="utf-8") as f:
+    with _locked_file(path, "a") as f:
         writer = csv.DictWriter(f, fieldnames=TRADE_LOG_FIELDS)
         writer.writerow({k: trade.get(k, "") for k in TRADE_LOG_FIELDS})
 
 
 def load_trade_log(limit: int = 500):
+    """Defensive read: any row whose column count doesn't match the header
+    (e.g. a historical row written before the "source" column existed, or
+    any other on-disk corruption) is skipped instead of being returned as
+    a broken dict with a None key -- which previously crashed the JSON
+    encoder in /api/trade_log with 'TypeError: ... NoneType and str'.
+    Skipped rows are counted and logged so corruption is visible, not
+    silent."""
     path = config.TRADE_LOG_FILE
     if not path.exists():
         return []
+
+    rows = []
+    skipped = 0
     with open(path, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        try:
+            reader = csv.reader(f)
+            try:
+                header = next(reader)
+            except StopIteration:
+                return []
+            expected_len = len(header)
+            for raw_row in reader:
+                if len(raw_row) != expected_len:
+                    skipped += 1
+                    continue
+                row = dict(zip(header, raw_row))
+                if None in row:
+                    skipped += 1
+                    continue
+                rows.append(row)
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+    if skipped:
+        print(f"[trade_journal] load_trade_log: skipped {skipped} malformed row(s) in {path}")
+
     return rows[-limit:]
 
 
@@ -121,25 +202,46 @@ EQUITY_FIELDS = ["time", "equity", "pnl_usdt", "trade_id"]
 def _ensure_equity_header():
     path = config.EQUITY_CURVE_FILE
     if not path.exists():
-        with open(path, "w", newline="", encoding="utf-8") as f:
+        with _locked_file(path, "w") as f:
             writer = csv.DictWriter(f, fieldnames=EQUITY_FIELDS)
             writer.writeheader()
 
 
 def append_equity_point(time_iso: str, equity: float, pnl_usdt: float, trade_id: str):
     _ensure_equity_header()
-    with open(config.EQUITY_CURVE_FILE, "a", newline="", encoding="utf-8") as f:
+    with _locked_file(config.EQUITY_CURVE_FILE, "a") as f:
         writer = csv.DictWriter(f, fieldnames=EQUITY_FIELDS)
         writer.writerow({"time": time_iso, "equity": equity, "pnl_usdt": pnl_usdt, "trade_id": trade_id})
 
 
 def load_equity_curve(limit: int = 2000):
+    """Same defensive-read treatment as load_trade_log (see above)."""
     path = config.EQUITY_CURVE_FILE
     if not path.exists():
         return []
+
+    rows = []
+    skipped = 0
     with open(path, "r", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
+        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        try:
+            reader = csv.reader(f)
+            try:
+                header = next(reader)
+            except StopIteration:
+                return []
+            expected_len = len(header)
+            for raw_row in reader:
+                if len(raw_row) != expected_len:
+                    skipped += 1
+                    continue
+                rows.append(dict(zip(header, raw_row)))
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+    if skipped:
+        print(f"[trade_journal] load_equity_curve: skipped {skipped} malformed row(s) in {path}")
+
     return rows[-limit:]
 
 
@@ -167,14 +269,14 @@ def get_fee_totals():
 
 def get_net_pnl_after_fees():
     """Sums pnl_after_fees_usdt across the closed trade log (falls back to
-    pnl_usdt minus a freshly computed fee for legacy rows that predate the
-    fee columns, so old trades don't show as zero)."""
+    pnl_usdt minus a freshly computed fee if pnl_after_fees_usdt is blank
+    on an older row)."""
     rows = load_trade_log(limit=100000)
     total = 0.0
     for r in rows:
-        raw = r.get("pnl_after_fees_usdt")
-        if raw not in (None, ""):
-            total += float(raw)
+        val = r.get("pnl_after_fees_usdt")
+        if val not in (None, ""):
+            total += float(val)
         else:
             pnl = float(r.get("pnl_usdt") or 0)
             fees = compute_fees(float(r.get("notional") or 0))
