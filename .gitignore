@@ -1,3 +1,36 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Backup files
+*.bak
+
+# Logs
+*.log
 server.log
+
+# Runtime state
+state/
+
+# Local data (загружается сервером динамически)
+data/
+output/
+
+# Research / sweep scripts и результаты
+tp_sl_sweep*.py
+tp_sl_sweep*.csv
+fetch_futures_ticks.py
+validate_backtest.py
+tools/
+tools_local/
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Env secrets
+.env
+*.pem
+*.key

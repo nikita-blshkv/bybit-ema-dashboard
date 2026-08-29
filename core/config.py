@@ -28,17 +28,11 @@ BACKTEST_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 SYMBOLS = [
     "BTCUSDT", "ETHUSDT",
-    "XRPUSDT",     # Ripple
     "BNBUSDT",
     "SOLUSDT",     # Solana
     "HYPEUSDT",    # Hyperliquid
-    "ZECUSDT",     # Zcash
     "LTCUSDT",     # Litecoin
-    "HBARUSDT",    # Hedera
     "SUIUSDT",
-    "NEARUSDT",
-    "OKBUSDT",
-    "ASTERUSDT",
     "MNTUSDT",     # Mantle
     "DOTUSDT",     # Polkadot
     "WLDUSDT",     # Worldcoin
@@ -52,10 +46,16 @@ SYMBOLS = [
 # Timeframes exposed on the dashboard chart switcher.
 # Values are Bybit v5 kline "interval" strings.
 TIMEFRAMES = {
-    "1m": "1",
-    "5m": "5",
+    "4m": "4",
+    "8m": "8",
     "1h": "60",
 }
+
+# Live strategy now runs on a single mode: Heikin-Ashi 4m base candles
+# confirmed by Heikin-Ashi 8m candles (per 90-day sweep results, Aug 2026).
+STRATEGY_BASE_TF_LABEL = "4m"
+STRATEGY_CONFIRM_TF_LABEL = "8m"
+STRATEGY_CANDLE_MODE = "heikin_ashi"
 
 CANDLES_PER_TIMEFRAME = 50  # how many candles the chart keeps/shows per symbol/timeframe
 
@@ -65,8 +65,8 @@ CANDLES_PER_TIMEFRAME = 50  # how many candles the chart keeps/shows per symbol/
 # immediately instead of waiting days for history to accumulate.
 CHART_LOOKBACK_HOURS = 100
 CHART_BARS_PER_TF = {
-    "1m": CHART_LOOKBACK_HOURS * 60,   # 6000 bars
-    "5m": CHART_LOOKBACK_HOURS * 12,   # 1200 bars
+    "4m": CHART_LOOKBACK_HOURS * 15,   # 1500 bars
+    "8m": CHART_LOOKBACK_HOURS * 7.5,  # 750 bars
     "1h": CHART_LOOKBACK_HOURS,        # 100 bars
 }
 
@@ -75,11 +75,11 @@ CHART_BARS_PER_TF = {
 # ---------------------------------------------------------------------------
 DEFAULT_EMA_FAST = 7
 DEFAULT_EMA_SLOW = 133
-DEFAULT_TP_PCT = 2.8   # percent
-DEFAULT_SL_PCT = 1.2   # percent
+DEFAULT_TP_PCT = 0.5   # percent -- per 90-day 4m/8m Heikin-Ashi sweep
+DEFAULT_SL_PCT = 1.0   # percent -- per 90-day 4m/8m Heikin-Ashi sweep
 DEFAULT_DIRECTION = "both"   # "both" | "long" | "short"
 
-DEFAULT_INITIAL_EQUITY = 100000.0
+DEFAULT_INITIAL_EQUITY = 10000.0
 DEFAULT_MARGIN_PER_TRADE = 1000.0
 DEFAULT_LEVERAGE = 10.0
 DEFAULT_MAX_OPEN_POSITIONS = 10

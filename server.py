@@ -75,7 +75,7 @@ def api_params():
 @app.route("/api/candles", methods=["GET"])
 def api_candles():
     symbol = request.args.get("symbol", config.SYMBOLS[0])
-    tf_label = request.args.get("tf", "1m")
+    tf_label = request.args.get("tf", config.STRATEGY_BASE_TF_LABEL)
     n = int(request.args.get("n", config.CHART_BARS_PER_TF.get(tf_label, config.CANDLES_PER_TIMEFRAME)))
 
     if symbol not in config.SYMBOLS:
@@ -140,7 +140,7 @@ def api_symbols():
 @app.route("/api/backtest_chart", methods=["GET"])
 def api_backtest_chart():
     """
-    Candles (1m/5m/1h) + EMA overlays + simulated trades for one symbol,
+    Candles (4m/8m/1h) + EMA overlays + simulated trades for one symbol,
     used by the price-chart tab so trade entries/exits can be verified
     visually against the actual OHLC data.
     """
@@ -258,7 +258,7 @@ def _backfill_full_lookback():
 
 
 if __name__ == "__main__":
-    print("Bootstrapping candle history (all symbols / 1m, 5m, 1h)...")
+    print("Bootstrapping candle history (all symbols / 4m, 8m, 1h)...")
     _bootstrap_history()
 
     print("Backfilling trade journal from exchange closed-pnl history...")

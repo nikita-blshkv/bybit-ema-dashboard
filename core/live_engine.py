@@ -6,8 +6,9 @@ Behavior:
   This file is written by the Flask server when you click Start/Stop on the
   dashboard, and read by this background loop.
 - While running=True: every POLL_INTERVAL_SECONDS it syncs candle history
-  for every symbol/timeframe, checks the latest CLOSED 1m bar for a fresh
-  EMA cross signal (confirmed on 5m too), and opens a new paper position if
+  for every symbol/timeframe, checks the latest CLOSED 4m Heikin-Ashi bar
+  for a fresh EMA cross signal (confirmed on 8m Heikin-Ashi too), and opens
+  a new paper position if
   capacity (max_open_positions) allows.
 - Regardless of running flag: every tick it also checks all currently open
   positions against fresh price data and closes them on TP/SL. This is what
@@ -555,30 +556,32 @@ def run_forever():
                 if symbol not in active_symbols:
                     continue
                 try:
-                    df_1m = data_store.sync_symbol_timeframe(
-                        symbol, "1m", config.TIMEFRAMES["1m"], min_candles=config.CANDLES_PER_TIMEFRAME
+                    base_tf = config.STRATEGY_BASE_TF_LABEL
+                    df_base = data_store.sync_symbol_timeframe(
+                        symbol, base_tf, config.TIMEFRAMES[base_tf], min_candles=config.CANDLES_PER_TIMEFRAME
                     )
-                    if df_1m.empty or len(df_1m) < params["ema_slow"] + 5:
+                    if df_base.empty or len(df_base) < params["ema_slow"] + 5:
                         continue
 
-                    latest_row = df_1m.iloc[-1]
+                    latest_row = df_base.iloc[-1]
                     latest_prices[symbol] = {
                         "high": float(latest_row["high"]),
                         "low": float(latest_row["low"]),
                         "close": float(latest_row["close"]),
-                        "time": df_1m.index[-1].isoformat(),
+                        "time": df_base.index[-1].isoformat(),
                     }
 
                     if running:
                         with_signals = signal_engine.compute_signals(
-                            df_1m, params["ema_fast"], params["ema_slow"], params["direction"]
+                            df_base, params["ema_fast"], params["ema_slow"], params["direction"]
                         )
                         ts, direction, price = signal_engine.latest_signal(with_signals)
                         signals[symbol] = (ts, direction, price)
 
-                    # also keep 5m and 1h history in sync for the chart, even
-                    # if the engine is stopped -- charting should always work.
-                    for tf_label in ("5m", "1h"):
+                    # also keep the confirmation timeframe and 1h history in
+                    # sync for the chart, even if the engine is stopped --
+                    # charting should always work regardless of run state.
+                    for tf_label in (config.STRATEGY_CONFIRM_TF_LABEL, "1h"):
                         data_store.sync_symbol_timeframe(
                             symbol, tf_label, config.TIMEFRAMES[tf_label], min_candles=config.CANDLES_PER_TIMEFRAME
                         )

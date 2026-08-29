@@ -104,7 +104,7 @@ document.querySelectorAll("nav.tabs button").forEach((btn) => {
 // ---------------------------------------------------------------------
 
 let currentSymbol = "BTCUSDT";
-let currentTf = "1m";
+let currentTf = "4m";
 let liveChart = null;
 let liveCandleSeries = null;
 let liveEmaFast1m = null;
@@ -177,8 +177,8 @@ function getStrategyEmaPeriods() {
 
 function chartBarsForTf(tf) {
   const hours = 100;
-  if (tf === "1m") return hours * 60;
-  if (tf === "5m") return hours * 12;
+  if (tf === "4m") return Math.round(hours * 15);
+  if (tf === "8m") return Math.round(hours * 7.5);
   if (tf === "1h") return hours;
   return 300;
 }
@@ -187,17 +187,17 @@ async function refreshLiveEmaOverlay() {
   try {
     const { fast, slow } = getStrategyEmaPeriods();
 
-    const data1m = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=1m&n=${chartBarsForTf("1m")}`);
-    const closes1m = data1m.candles.map((c) => c.close);
-    const times1m = data1m.candles.map((c) => Math.floor(new Date(c.time).getTime() / 1000));
+    const data4m = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=4m&n=${chartBarsForTf("4m")}`);
+    const closes1m = data4m.candles.map((c) => c.close);
+    const times1m = data4m.candles.map((c) => Math.floor(new Date(c.time).getTime() / 1000));
     const emaFast1m = computeEma(closes1m, fast);
     const emaSlow1m = computeEma(closes1m, slow);
     liveEmaFast1m.setData(times1m.map((t, i) => ({ time: t, value: emaFast1m[i] })));
     liveEmaSlow1m.setData(times1m.map((t, i) => ({ time: t, value: emaSlow1m[i] })));
 
-    const data5m = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=5m&n=${chartBarsForTf("5m")}`);
-    const closes5m = data5m.candles.map((c) => c.close);
-    const times5m = data5m.candles.map((c) => Math.floor(new Date(c.time).getTime() / 1000));
+    const data8m = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=8m&n=${chartBarsForTf("8m")}`);
+    const closes5m = data8m.candles.map((c) => c.close);
+    const times5m = data8m.candles.map((c) => Math.floor(new Date(c.time).getTime() / 1000));
     const emaFast5m = computeEma(closes5m, fast);
     const emaSlow5m = computeEma(closes5m, slow);
     liveEmaFast5m.setData(times5m.map((t, i) => ({ time: t, value: emaFast5m[i] })));
@@ -796,7 +796,7 @@ function getCtSymbol() {
 }
 function getCtTf() {
   const checked = document.querySelector("#ct-tf label.checked");
-  return checked ? checked.dataset.val : "1m";
+  return checked ? checked.dataset.val : "4m";
 }
 function getCtDirection() {
   const checked = document.querySelector("#ct-direction label.checked");
@@ -824,7 +824,7 @@ async function loadChartTabData() {
     ctLastData = data;
     renderChartTabTimeframe({ fitContent: true });
     renderChartTabTrades(data.trades);
-    showToast(`Загружено: ${data.candles_1m.length} свечей 1m, ${data.trades.length} сделок`);
+    showToast(`Загружено: ${data.candles_4m.length} свечей 4m, ${data.trades.length} сделок`);
     startChartAutoRefresh();
   } catch (e) {
     console.error("loadChartTabData failed", e);
@@ -899,7 +899,7 @@ function renderChartTabTimeframe(opts = {}) {
   if (!ctLastData) return;
   const fitContent = opts.fitContent !== false;
   const tf = getCtTf();
-  const key = tf === "1m" ? "candles_1m" : tf === "5m" ? "candles_5m" : "candles_1h";
+  const key = tf === "4m" ? "candles_4m" : tf === "8m" ? "candles_8m" : "candles_1h";
   const rows = ctLastData[key] || [];
 
   const bars = rows.map((c) => ({
@@ -907,12 +907,12 @@ function renderChartTabTimeframe(opts = {}) {
   }));
   ctCandleSeries.setData(dedupSorted(bars));
 
-  if (tf === "1m") {
+  if (tf === "4m") {
     ctEmaFast1m.setData(dedupSorted(rows.filter((c) => c.ema_fast != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_fast }))));
     ctEmaSlow1m.setData(dedupSorted(rows.filter((c) => c.ema_slow != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_slow }))));
-    ctEmaFast5m.setData(dedupSorted(rows.filter((c) => c.ema_fast_5m != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_fast_5m }))));
-    ctEmaSlow5m.setData(dedupSorted(rows.filter((c) => c.ema_slow_5m != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_slow_5m }))));
-  } else if (tf === "5m") {
+    ctEmaFast5m.setData(dedupSorted(rows.filter((c) => c.ema_fast_8m != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_fast_8m }))));
+    ctEmaSlow5m.setData(dedupSorted(rows.filter((c) => c.ema_slow_8m != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_slow_8m }))));
+  } else if (tf === "8m") {
     ctEmaFast1m.setData([]);
     ctEmaSlow1m.setData([]);
     ctEmaFast5m.setData(dedupSorted(rows.filter((c) => c.ema_fast != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_fast }))));
@@ -925,9 +925,9 @@ function renderChartTabTimeframe(opts = {}) {
     ctEmaSlow5m.setData([]);
   }
 
-  // trade markers: only meaningful on 1m/5m where entry/exit timestamps
+  // trade markers: only meaningful on 4m/8m where entry/exit timestamps
   // land on real bars; on 1h they'd be too imprecise to place reliably.
-  if (tf === "1m" || tf === "5m") {
+  if (tf === "4m" || tf === "8m") {
     setTradeMarkers(ctLastData.trades || []);
   } else {
     ctCandleSeries.setMarkers([]);
@@ -1008,7 +1008,7 @@ function renderChartTabTrades(trades) {
 function scrollChartToTrade(entryIso) {
   if (!ctChart || !ctLastData) return;
   const tf = getCtTf();
-  const key = tf === "5m" ? "candles_5m" : "candles_1m";
+  const key = tf === "8m" ? "candles_8m" : "candles_4m";
   const rows = ctLastData[key] || [];
   const targetTime = toUnixTime(entryIso);
   let idx = rows.findIndex((c) => toUnixTime(c.time) >= targetTime);
@@ -1031,7 +1031,7 @@ document.getElementById("ct-fit").addEventListener("click", () => {
 function shiftChartTabWindow(barsDelta) {
   if (!ctChart || !ctLastData) return;
   const tf = getCtTf();
-  const key = tf === "5m" ? "candles_5m" : tf === "1h" ? "candles_1h" : "candles_1m";
+  const key = tf === "8m" ? "candles_8m" : tf === "1h" ? "candles_1h" : "candles_4m";
   const rows = ctLastData[key] || [];
   if (!rows.length) return;
 

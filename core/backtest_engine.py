@@ -67,7 +67,7 @@ def ensure_backtest_history(symbol: str, days: int = 90, warmup_days: int = 0,
             back_end = df.index.min() - pd.Timedelta(minutes=1) if len(df) else now
             if back_end > back_start:
                 older = bybit_client.fetch_klines_range(
-                    symbol, config.TIMEFRAMES["1m"],
+                    symbol, "1",
                     start_time_ms=int(back_start.value // 1_000_000),
                     end_time_ms=int(back_end.value // 1_000_000),
                 )
@@ -78,7 +78,7 @@ def ensure_backtest_history(symbol: str, days: int = 90, warmup_days: int = 0,
             gap_start = df.index.max() + pd.Timedelta(minutes=1)
             gap_end = now
             newer = bybit_client.fetch_klines_range(
-                symbol, config.TIMEFRAMES["1m"],
+                symbol, "1",
                 start_time_ms=int(gap_start.value // 1_000_000),
                 end_time_ms=int(gap_end.value // 1_000_000),
             )
@@ -96,7 +96,7 @@ def ensure_backtest_history(symbol: str, days: int = 90, warmup_days: int = 0,
     end = now
     start = end - pd.Timedelta(days=total_days)
     df = bybit_client.fetch_klines_range(
-        symbol, config.TIMEFRAMES["1m"],
+        symbol, "1",
         start_time_ms=int(start.value // 1_000_000),
         end_time_ms=int(end.value // 1_000_000),
     )
@@ -227,10 +227,17 @@ def run_backtest(
         if df_1m is None or df_1m.empty or len(df_1m) < ema_slow + 10:
             continue
 
-        cutoff = df_1m.index.max() - pd.Timedelta(days=days)
+        # Strategy runs on 4m base candles (Heikin-Ashi), confirmed on 8m --
+        # resample the raw cached 1m history up to 4m here so the backtest
+        # uses the exact same granularity as the live engine.
+        df_base = signal_engine.resample_ohlc_right(df_1m, "4min")
+        if df_base.empty or len(df_base) < ema_slow + 10:
+            continue
+
+        cutoff = df_base.index.max() - pd.Timedelta(days=days)
         report_start_ts = cutoff if report_start_ts is None else max(report_start_ts, cutoff)
 
-        with_signals = signal_engine.compute_signals(df_1m, ema_fast, ema_slow, direction)
+        with_signals = signal_engine.compute_signals(df_base, ema_fast, ema_slow, direction)
         market_data[symbol] = with_signals[["open", "high", "low", "close"]].copy()
 
         if direction in ("both", "long"):
@@ -358,9 +365,9 @@ def backtest_chart_data(symbol: str, ema_fast: int, ema_slow: int, direction: st
                          tp_pct: float, sl_pct: float, days: int = 90,
                          tie_break: str = "sl_first"):
     """
-    Returns candles (1m/5m/1h) + EMA series for the price-chart tab:
-      - 1m candles with ema_fast_1m / ema_slow_1m
-      - 5m candles with ema_fast_5m / ema_slow_5m
+    Returns candles (4m/8m/1h) + EMA series for the price-chart tab:
+      - 4m candles with ema_fast / ema_slow (Heikin-Ashi based)
+      - 8m candles with ema_fast_8m / ema_slow_8m confirmation series
       - 1h candles (no EMA overlay, context only)
       - the full list of simulated trades (entry/exit time+price+reason)
         for this symbol, so the frontend can draw markers on any
@@ -378,52 +385,55 @@ def backtest_chart_data(symbol: str, ema_fast: int, ema_slow: int, direction: st
 
     warmup_days = max(1, int(np.ceil(ema_slow / (24 * 60))) + 2)
     df_1m = ensure_backtest_history(symbol, days=days, warmup_days=warmup_days)
-    if df_1m.empty or len(df_1m) < ema_slow + 10:
+    df_base = signal_engine.resample_ohlc_right(df_1m, "4min") if not df_1m.empty else df_1m
+    if df_base.empty or len(df_base) < ema_slow + 10:
         return {
-            "symbol": symbol, "candles_1m": [], "candles_5m": [], "candles_1h": [],
+            "symbol": symbol, "candles_4m": [], "candles_8m": [], "candles_1h": [],
             "trades": [], "data_start": None, "data_end": None,
         }
 
-    cutoff = df_1m.index.max() - pd.Timedelta(days=days)
+    cutoff = df_base.index.max() - pd.Timedelta(days=days)
 
-    with_signals = signal_engine.compute_signals(df_1m, ema_fast, ema_slow, direction)
+    with_signals = signal_engine.compute_signals(df_base, ema_fast, ema_slow, direction)
 
-    df_5m = signal_engine.resample_ohlc_right(df_1m, "5min")
-    ema_f5 = df_5m["close"].ewm(span=ema_fast, adjust=False).mean()
-    ema_s5 = df_5m["close"].ewm(span=ema_slow, adjust=False).mean()
+    df_8m_raw = signal_engine.resample_ohlc_right(df_base, "8min")
+    ha_8m = signal_engine.to_heikin_ashi(df_8m_raw)
+    ema_f5 = ha_8m["close"].ewm(span=ema_fast, adjust=False).mean()
+    ema_s5 = ha_8m["close"].ewm(span=ema_slow, adjust=False).mean()
+    df_5m = df_8m_raw  # keep raw (non-HA) OHLC for chart candle bodies
 
-    df_1h = signal_engine.resample_ohlc_right(df_1m, "1h")
+    df_1h = signal_engine.resample_ohlc_right(df_base, "1h")
 
     # Project the 5m EMAs onto the 1m timeline the same no-lookahead way
     # signal_engine uses for cross detection, so the "4 moving averages"
-    # shown on the 1m chart (ema_fast_1m, ema_slow_1m, ema_fast_5m,
-    # ema_slow_5m) are exactly the values the strategy itself used to
+    # shown on the 1m chart (ema_fast_1m, ema_slow_1m, ema_fast_8m,
+    # ema_slow_8m) are exactly the values the strategy itself used to
     # decide entries -- not an approximation.
-    ema_f5_on_1m = signal_engine.map_htf_no_lookahead(with_signals.index, ema_f5)
-    ema_s5_on_1m = signal_engine.map_htf_no_lookahead(with_signals.index, ema_s5)
+    ema_f8_on_base = signal_engine.map_htf_no_lookahead(with_signals.index, ema_f5)
+    ema_s8_on_base = signal_engine.map_htf_no_lookahead(with_signals.index, ema_s5)
 
-    view_1m = with_signals[with_signals.index >= cutoff]
-    view_5m = df_5m[df_5m.index >= cutoff]
+    view_base = with_signals[with_signals.index >= cutoff]
+    view_8m = df_5m[df_5m.index >= cutoff]
     view_1h = df_1h[df_1h.index >= cutoff]
     ema_f5_view = ema_f5[ema_f5.index >= cutoff]
     ema_s5_view = ema_s5[ema_s5.index >= cutoff]
-    ema_f5_on_1m_view = ema_f5_on_1m[ema_f5_on_1m.index >= cutoff]
-    ema_s5_on_1m_view = ema_s5_on_1m[ema_s5_on_1m.index >= cutoff]
+    ema_f8_on_base_view = ema_f8_on_base[ema_f8_on_base.index >= cutoff]
+    ema_s8_on_base_view = ema_s8_on_base[ema_s8_on_base.index >= cutoff]
 
-    candles_1m = [
+    candles_4m = [
         {
             "time": ts.isoformat(),
             "open": float(r["open"]), "high": float(r["high"]),
             "low": float(r["low"]), "close": float(r["close"]),
             "ema_fast": float(r["ema_fast"]) if pd.notna(r["ema_fast"]) else None,
             "ema_slow": float(r["ema_slow"]) if pd.notna(r["ema_slow"]) else None,
-            "ema_fast_5m": float(ema_f5_on_1m_view.loc[ts]) if ts in ema_f5_on_1m_view.index and pd.notna(ema_f5_on_1m_view.loc[ts]) else None,
-            "ema_slow_5m": float(ema_s5_on_1m_view.loc[ts]) if ts in ema_s5_on_1m_view.index and pd.notna(ema_s5_on_1m_view.loc[ts]) else None,
+            "ema_fast_8m": float(ema_f8_on_base_view.loc[ts]) if ts in ema_f8_on_base_view.index and pd.notna(ema_f8_on_base_view.loc[ts]) else None,
+            "ema_slow_8m": float(ema_s8_on_base_view.loc[ts]) if ts in ema_s8_on_base_view.index and pd.notna(ema_s8_on_base_view.loc[ts]) else None,
         }
-        for ts, r in view_1m.iterrows()
+        for ts, r in view_base.iterrows()
     ]
 
-    candles_5m = [
+    candles_8m = [
         {
             "time": ts.isoformat(),
             "open": float(r["open"]), "high": float(r["high"]),
@@ -431,7 +441,7 @@ def backtest_chart_data(symbol: str, ema_fast: int, ema_slow: int, direction: st
             "ema_fast": float(ema_f5_view.loc[ts]) if ts in ema_f5_view.index and pd.notna(ema_f5_view.loc[ts]) else None,
             "ema_slow": float(ema_s5_view.loc[ts]) if ts in ema_s5_view.index and pd.notna(ema_s5_view.loc[ts]) else None,
         }
-        for ts, r in view_5m.iterrows()
+        for ts, r in view_8m.iterrows()
     ]
 
     candles_1h = [
@@ -468,7 +478,7 @@ def backtest_chart_data(symbol: str, ema_fast: int, ema_slow: int, direction: st
         market = with_signals[["open", "high", "low", "close"]]
         open_positions = []
 
-        for ts in view_1m.index:
+        for ts in view_base.index:
             still_open = []
             row = market.loc[ts]
             for pos in open_positions:
@@ -517,12 +527,12 @@ def backtest_chart_data(symbol: str, ema_fast: int, ema_slow: int, direction: st
 
     return {
         "symbol": symbol,
-        "candles_1m": candles_1m,
-        "candles_5m": candles_5m,
+        "candles_4m": candles_4m,
+        "candles_8m": candles_8m,
         "candles_1h": candles_1h,
         "trades": trade_rows,
-        "data_start": view_1m.index[0].isoformat() if len(view_1m) else None,
-        "data_end": view_1m.index[-1].isoformat() if len(view_1m) else None,
+        "data_start": view_base.index[0].isoformat() if len(view_base) else None,
+        "data_end": view_base.index[-1].isoformat() if len(view_base) else None,
     }
 
 

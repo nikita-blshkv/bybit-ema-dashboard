@@ -11,7 +11,7 @@
 <div id="app">
 
   <header>
-    <h1>EMA Cross Dashboard <span>16 пар — Bybit paper engine</span></h1>
+    <h1>EMA Cross Dashboard <span>10 пар — Bybit paper engine</span></h1>
     <div style="display:flex; align-items:center; gap:10px;">
       <div id="status-pill" class="status-pill stopped"><span class="dot"></span><span id="status-text">Остановлен</span></div>
       <button id="btn-start" class="btn btn-start">Start</button>
@@ -46,11 +46,11 @@
         <div class="field-row">
           <div class="field">
             <label>Take profit, %</label>
-            <input type="number" id="p-tp" value="2.8" step="0.1" min="0.1">
+            <input type="number" id="p-tp" value="0.5" step="0.1" min="0.1">
           </div>
           <div class="field">
             <label>Stop loss, %</label>
-            <input type="number" id="p-sl" value="1.2" step="0.1" min="0.1">
+            <input type="number" id="p-sl" value="1.0" step="0.1" min="0.1">
           </div>
         </div>
 
@@ -84,17 +84,11 @@
           <div class="coin-checklist" id="p-symbols">
             <label><input type="checkbox" value="BTCUSDT" checked> BTC</label>
             <label><input type="checkbox" value="ETHUSDT" checked> ETH</label>
-            <label><input type="checkbox" value="XRPUSDT" checked> XRP</label>
             <label><input type="checkbox" value="BNBUSDT" checked> BNB</label>
             <label><input type="checkbox" value="SOLUSDT" checked> SOL</label>
             <label><input type="checkbox" value="HYPEUSDT" checked> HYPE</label>
-            <label><input type="checkbox" value="ZECUSDT" checked> ZEC</label>
             <label><input type="checkbox" value="LTCUSDT" checked> LTC</label>
-            <label><input type="checkbox" value="HBARUSDT" checked> HBAR</label>
             <label><input type="checkbox" value="SUIUSDT" checked> SUI</label>
-            <label><input type="checkbox" value="NEARUSDT" checked> NEAR</label>
-            <label><input type="checkbox" value="OKBUSDT" checked> OKB</label>
-            <label><input type="checkbox" value="ASTERUSDT" checked> ASTER</label>
             <label><input type="checkbox" value="MNTUSDT" checked> MNT</label>
             <label><input type="checkbox" value="DOTUSDT" checked> DOT</label>
             <label><input type="checkbox" value="WLDUSDT" checked> WLD</label>
@@ -122,24 +116,18 @@
             <div class="symbol-tabs symbol-tabs-compact" id="symbol-tabs">
               <button data-symbol="BTCUSDT" class="active">BTC</button>
               <button data-symbol="ETHUSDT">ETH</button>
-              <button data-symbol="XRPUSDT">XRP</button>
               <button data-symbol="BNBUSDT">BNB</button>
               <button data-symbol="SOLUSDT">SOL</button>
               <button data-symbol="HYPEUSDT">HYPE</button>
-              <button data-symbol="ZECUSDT">ZEC</button>
               <button data-symbol="LTCUSDT">LTC</button>
-              <button data-symbol="HBARUSDT">HBAR</button>
               <button data-symbol="SUIUSDT">SUI</button>
-              <button data-symbol="NEARUSDT">NEAR</button>
-              <button data-symbol="OKBUSDT">OKB</button>
-              <button data-symbol="ASTERUSDT">ASTER</button>
               <button data-symbol="MNTUSDT">MNT</button>
               <button data-symbol="DOTUSDT">DOT</button>
               <button data-symbol="WLDUSDT">WLD</button>
             </div>
             <div class="tf-tabs" id="tf-tabs">
-              <button data-tf="1m" class="active">1m</button>
-              <button data-tf="5m">5m</button>
+              <button data-tf="4m" class="active">4m</button>
+              <button data-tf="8m">8m</button>
               <button data-tf="1h">1h</button>
             </div>
           </div>
@@ -202,17 +190,11 @@
           <div class="radio-row radio-row-compact" id="bt-symbols">
             <label data-val="BTCUSDT" class="checked">BTC</label>
             <label data-val="ETHUSDT" class="checked">ETH</label>
-            <label data-val="XRPUSDT">XRP</label>
             <label data-val="BNBUSDT">BNB</label>
             <label data-val="SOLUSDT">SOL</label>
             <label data-val="HYPEUSDT">HYPE</label>
-            <label data-val="ZECUSDT">ZEC</label>
             <label data-val="LTCUSDT">LTC</label>
-            <label data-val="HBARUSDT">HBAR</label>
             <label data-val="SUIUSDT">SUI</label>
-            <label data-val="NEARUSDT">NEAR</label>
-            <label data-val="OKBUSDT">OKB</label>
-            <label data-val="ASTERUSDT">ASTER</label>
             <label data-val="MNTUSDT">MNT</label>
             <label data-val="DOTUSDT">DOT</label>
             <label data-val="WLDUSDT">WLD</label>
@@ -329,17 +311,11 @@
           <div class="radio-row radio-row-compact" id="ct-symbols">
             <label data-val="BTCUSDT" class="checked">BTC</label>
             <label data-val="ETHUSDT">ETH</label>
-            <label data-val="XRPUSDT">XRP</label>
             <label data-val="BNBUSDT">BNB</label>
             <label data-val="SOLUSDT">SOL</label>
             <label data-val="HYPEUSDT">HYPE</label>
-            <label data-val="ZECUSDT">ZEC</label>
             <label data-val="LTCUSDT">LTC</label>
-            <label data-val="HBARUSDT">HBAR</label>
             <label data-val="SUIUSDT">SUI</label>
-            <label data-val="NEARUSDT">NEAR</label>
-            <label data-val="OKBUSDT">OKB</label>
-            <label data-val="ASTERUSDT">ASTER</label>
             <label data-val="MNTUSDT">MNT</label>
             <label data-val="DOTUSDT">DOT</label>
             <label data-val="WLDUSDT">WLD</label>
@@ -349,8 +325,8 @@
         <div class="field">
           <label>Таймфрейм</label>
           <div class="radio-row" id="ct-tf">
-            <label data-val="1m" class="checked">1m</label>
-            <label data-val="5m">5m</label>
+            <label data-val="4m" class="checked">4m</label>
+            <label data-val="8m">8m</label>
             <label data-val="1h">1h</label>
           </div>
         </div>
