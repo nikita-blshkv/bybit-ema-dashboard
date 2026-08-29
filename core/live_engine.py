@@ -356,6 +356,7 @@ def _check_and_close_open_positions(latest_prices: dict):
 # ---------------------------------------------------------------------------
 
 def backfill_trade_log_from_exchange(lookback_records: int = 50):
+    still_open = []
     """Pull recent closed-pnl history straight from Bybit for every symbol
     in config.SYMBOLS and insert any trades that are not already present
     in the local trade_log.csv (matched by symbol + entry_time + exit

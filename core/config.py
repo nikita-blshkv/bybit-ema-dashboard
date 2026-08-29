@@ -46,6 +46,7 @@ SYMBOLS = [
 # Timeframes exposed on the dashboard chart switcher.
 # Values are Bybit v5 kline "interval" strings.
 TIMEFRAMES = {
+    "1m": "1",
     "4m": "4",
     "8m": "8",
     "1h": "60",

@@ -107,17 +107,19 @@ def api_open_positions():
 @app.route("/api/live_positions", methods=["GET"])
 def api_live_positions():
     """Live open positions + wallet balance pulled directly from the
-    Bybit demo account (not the local paper journal). Returns an
-    'enabled': false flag with an explanatory message if demo API keys
-    are not yet configured in core/bybit_keys.py, instead of erroring."""
+    Bybit demo account (not the local paper journal). Returns a JSON
+    payload even when auth/network/API calls fail, so the dashboard
+    never crashes just because Bybit rejected the request."""
     try:
         positions = bybit_trade_client.get_open_positions()
         balance = bybit_trade_client.get_wallet_balance()
         return jsonify({"enabled": True, "positions": positions, "balance": balance})
     except BybitAuthError as exc:
-        return jsonify({"enabled": False, "positions": [], "balance": None, "message": str(exc)})
+        return jsonify({"enabled": False, "positions": [], "balance": None, "message": str(exc)}), 200
     except BybitApiError as exc:
-        return jsonify({"enabled": True, "positions": [], "balance": None, "message": str(exc)}), 200
+        return jsonify({"enabled": False, "positions": [], "balance": None, "message": str(exc)}), 200
+    except Exception as exc:
+        return jsonify({"enabled": False, "positions": [], "balance": None, "message": f"{type(exc).__name__}: {exc}"}), 200
 
 
 @app.route("/api/trade_log", methods=["GET"])
@@ -261,11 +263,15 @@ if __name__ == "__main__":
     print("Bootstrapping candle history (all symbols / 4m, 8m, 1h)...")
     _bootstrap_history()
 
-    print("Backfilling trade journal from exchange closed-pnl history...")
-    try:
-        live_engine.backfill_trade_log_from_exchange()
-    except Exception as exc:
-        print(f"[startup] exchange backfill failed, continuing anyway: {exc}")
+    enable_exchange_trade_backfill = os.environ.get("ENABLE_EXCHANGE_TRADE_BACKFILL", "0") == "1"
+    if enable_exchange_trade_backfill:
+        print("Backfilling trade journal from exchange closed-pnl history...")
+        try:
+            live_engine.backfill_trade_log_from_exchange()
+        except Exception as exc:
+            print(f"[startup] exchange backfill failed, continuing anyway: {exc}")
+    else:
+        print("[startup] exchange trade-history backfill disabled (set ENABLE_EXCHANGE_TRADE_BACKFILL=1 to enable).")
 
     print("Starting live engine background thread...")
     live_engine.start_background_thread()
