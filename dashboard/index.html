@@ -130,6 +130,10 @@
               <button data-tf="8m">8m</button>
               <button data-tf="1h">1h</button>
             </div>
+            <div class="radio-row" id="live-candle-type" style="margin-top:10px;">
+              <label data-val="japanese" class="checked">Japanese</label>
+              <label data-val="heikin">Heikin-Ashi</label>
+            </div>
           </div>
           <div id="live-chart-legend" style="display:flex; gap:14px; font-size:12px; color:#8b93a3; padding:6px 4px 0;"></div>
           <div id="chart-container"></div>
@@ -365,6 +369,14 @@
         <div class="field">
           <label>Дней истории</label>
           <input type="number" id="ct-days" value="90" min="1">
+        </div>
+
+        <div class="field">
+          <label>Тип свечей</label>
+          <div class="radio-row" id="ct-candle-type">
+            <label data-val="japanese" class="checked">Japanese</label>
+            <label data-val="heikin">Heikin-Ashi</label>
+          </div>
         </div>
 
         <button id="ct-load-btn" class="btn btn-primary" style="width:100%;">Загрузить график</button>

@@ -111,6 +111,7 @@ let liveEmaFast1m = null;
 let liveEmaSlow1m = null;
 let liveEmaFast5m = null;
 let liveEmaSlow5m = null;
+let liveLastCandlesByTf = { "4m": [], "8m": [], "1h": [] };
 
 function initLiveChart() {
   const container = document.getElementById("chart-container");
@@ -138,18 +139,18 @@ function initLiveChart() {
     wickDownColor: "#d64545",
   });
 
-  liveEmaFast1m = liveChart.addLineSeries({ color: "#4f9dff", lineWidth: 1, title: "EMA fast 1m", priceLineVisible: false, lastValueVisible: false });
-  liveEmaSlow1m = liveChart.addLineSeries({ color: "#a259ff", lineWidth: 1, title: "EMA slow 1m", priceLineVisible: false, lastValueVisible: false });
-  liveEmaFast5m = liveChart.addLineSeries({ color: "#ffb84f", lineWidth: 2, title: "EMA fast 5m", priceLineVisible: false, lastValueVisible: false });
-  liveEmaSlow5m = liveChart.addLineSeries({ color: "#ff5f8f", lineWidth: 2, title: "EMA slow 5m", priceLineVisible: false, lastValueVisible: false });
+  liveEmaFast1m = liveChart.addLineSeries({ color: "#4f9dff", lineWidth: 1, title: "EMA fast 4m HA", priceLineVisible: false, lastValueVisible: false });
+  liveEmaSlow1m = liveChart.addLineSeries({ color: "#a259ff", lineWidth: 1, title: "EMA slow 4m HA", priceLineVisible: false, lastValueVisible: false });
+  liveEmaFast5m = liveChart.addLineSeries({ color: "#ffb84f", lineWidth: 2, title: "EMA fast 8m HA", priceLineVisible: false, lastValueVisible: false });
+  liveEmaSlow5m = liveChart.addLineSeries({ color: "#ff5f8f", lineWidth: 2, title: "EMA slow 8m HA", priceLineVisible: false, lastValueVisible: false });
 
   const legend = document.getElementById("live-chart-legend");
   if (legend) {
     legend.innerHTML = `
-      <span style="color:#4f9dff;">─ EMA fast 1m</span>
-      <span style="color:#a259ff;">─ EMA slow 1m</span>
-      <span style="color:#ffb84f;">─ EMA fast 5m</span>
-      <span style="color:#ff5f8f;">─ EMA slow 5m</span>`;
+      <span style="color:#4f9dff;">─ EMA fast 4m HA</span>
+      <span style="color:#a259ff;">─ EMA slow 4m HA</span>
+      <span style="color:#ffb84f;">─ EMA fast 8m HA</span>
+      <span style="color:#ff5f8f;">─ EMA slow 8m HA</span>`;
   }
 
   window.addEventListener("resize", () => {
@@ -166,6 +167,47 @@ function computeEma(values, period) {
     out[i] = values[i] * k + out[i - 1] * (1 - k);
   }
   return out;
+}
+
+function buildHeikinAshiBars(bars) {
+  if (!bars || !bars.length) return [];
+  const out = [];
+  bars.forEach((bar, i) => {
+    const haClose = (Number(bar.open) + Number(bar.high) + Number(bar.low) + Number(bar.close)) / 4;
+    const haOpen = i === 0
+      ? (Number(bar.open) + Number(bar.close)) / 2
+      : (out[i - 1].open + out[i - 1].close) / 2;
+    const haHigh = Math.max(Number(bar.high), haOpen, haClose);
+    const haLow = Math.min(Number(bar.low), haOpen, haClose);
+    out.push({
+      time: bar.time,
+      open: haOpen,
+      high: haHigh,
+      low: haLow,
+      close: haClose,
+    });
+  });
+  return out;
+}
+
+function computeSeriesEmaFromBars(bars, period) {
+  const values = bars.map((b) => Number(b.close));
+  const ema = computeEma(values, period);
+  return bars.map((b, i) => ({ time: b.time, value: ema[i] }));
+}
+
+function normalizeBarsForCandleType(bars, candleType) {
+  return candleType === "heikin" ? buildHeikinAshiBars(bars) : bars;
+}
+
+function getLiveCandleType() {
+  const checked = document.querySelector("#live-candle-type label.checked");
+  return checked ? checked.dataset.val : "japanese";
+}
+
+function getCtCandleType() {
+  const checked = document.querySelector("#ct-candle-type label.checked");
+  return checked ? checked.dataset.val : "japanese";
 }
 
 function getStrategyEmaPeriods() {
@@ -186,22 +228,29 @@ function chartBarsForTf(tf) {
 async function refreshLiveEmaOverlay() {
   try {
     const { fast, slow } = getStrategyEmaPeriods();
+    const candleType = getLiveCandleType();
 
-    const data4m = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=4m&n=${chartBarsForTf("4m")}`);
-    const closes1m = data4m.candles.map((c) => c.close);
-    const times1m = data4m.candles.map((c) => Math.floor(new Date(c.time).getTime() / 1000));
-    const emaFast1m = computeEma(closes1m, fast);
-    const emaSlow1m = computeEma(closes1m, slow);
-    liveEmaFast1m.setData(times1m.map((t, i) => ({ time: t, value: emaFast1m[i] })));
-    liveEmaSlow1m.setData(times1m.map((t, i) => ({ time: t, value: emaSlow1m[i] })));
+    const ensureTf = async (tf) => {
+      if (liveLastCandlesByTf[tf] && liveLastCandlesByTf[tf].length) return liveLastCandlesByTf[tf];
+      const data = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=${tf}&n=${chartBarsForTf(tf)}`);
+      const bars = data.candles.map((c) => ({
+        time: toUnixTime(c.time),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      }));
+      liveLastCandlesByTf[tf] = bars;
+      return bars;
+    };
 
-    const data8m = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=8m&n=${chartBarsForTf("8m")}`);
-    const closes5m = data8m.candles.map((c) => c.close);
-    const times5m = data8m.candles.map((c) => Math.floor(new Date(c.time).getTime() / 1000));
-    const emaFast5m = computeEma(closes5m, fast);
-    const emaSlow5m = computeEma(closes5m, slow);
-    liveEmaFast5m.setData(times5m.map((t, i) => ({ time: t, value: emaFast5m[i] })));
-    liveEmaSlow5m.setData(times5m.map((t, i) => ({ time: t, value: emaSlow5m[i] })));
+    const bars4m = normalizeBarsForCandleType(await ensureTf("4m"), candleType);
+    const bars8m = normalizeBarsForCandleType(await ensureTf("8m"), candleType);
+
+    liveEmaFast1m.setData(computeSeriesEmaFromBars(bars4m, fast));
+    liveEmaSlow1m.setData(computeSeriesEmaFromBars(bars4m, slow));
+    liveEmaFast5m.setData(computeSeriesEmaFromBars(bars8m, fast));
+    liveEmaSlow5m.setData(computeSeriesEmaFromBars(bars8m, slow));
   } catch (e) {
     console.error("refreshLiveEmaOverlay failed", e);
   }
@@ -210,13 +259,15 @@ async function refreshLiveEmaOverlay() {
 async function refreshCandles() {
   try {
     const data = await apiGet(`/api/candles?symbol=${currentSymbol}&tf=${currentTf}&n=${chartBarsForTf(currentTf)}`);
-    const bars = data.candles.map((c) => ({
-      time: Math.floor(new Date(c.time).getTime() / 1000),
+    const rawBars = data.candles.map((c) => ({
+      time: toUnixTime(c.time),
       open: c.open,
       high: c.high,
       low: c.low,
       close: c.close,
     }));
+    liveLastCandlesByTf[currentTf] = rawBars;
+    const bars = normalizeBarsForCandleType(rawBars, getLiveCandleType());
     liveCandleSeries.setData(bars);
 
     const lastClose = bars.length ? bars[bars.length - 1].close : null;
@@ -262,7 +313,7 @@ async function refreshLiveTradeMarkers() {
     const markers = [];
     numbered.forEach((t) => {
       markers.push({
-        time: Math.floor(new Date(t.entry_time).getTime() / 1000),
+        time: toUnixTime(t.entry_time),
         position: t.direction === "long" ? "belowBar" : "aboveBar",
         color: t.direction === "long" ? "#26a269" : "#d64545",
         shape: t.direction === "long" ? "arrowUp" : "arrowDown",
@@ -279,7 +330,7 @@ async function refreshLiveTradeMarkers() {
         : `#${t.tradeNum} ${t.exit_reason} @ ${Number(t.exit_price).toFixed(2)}`;
 
       markers.push({
-        time: Math.floor(new Date(t.exit_time).getTime() / 1000),
+        time: toUnixTime(t.exit_time),
         position: t.direction === "long" ? "aboveBar" : "belowBar",
         color: pnlColor,
         shape: "circle",
@@ -741,6 +792,10 @@ let ctLastData = null; // last /api/backtest_chart response, cached for scroll n
 let ctBarSpacing = 6;
 let ctTabActive = false;
 let ctAutoRefreshTimer = null;
+let ctTradeLevelSeries = [];
+let ctSelectedTradeEntryIso = null; // short entry/exit price-level segments, redrawn per trade batch
+const TRADE_LEVEL_BARS = 6;  // width of each price-level segment, in bars either side of the marker time
+const CT_TF_SECONDS = { "4m": 240, "8m": 480, "1h": 3600 };
 
 function initChartTab() {
   const container = document.getElementById("ct-chart-container");
@@ -762,16 +817,16 @@ function initChartTab() {
     wickUpColor: "#26a269", wickDownColor: "#d64545",
   });
 
-  ctEmaFast1m = ctChart.addLineSeries({ color: "#4f9dff", lineWidth: 1, title: "EMA fast (1m)" });
-  ctEmaSlow1m = ctChart.addLineSeries({ color: "#a259ff", lineWidth: 1, title: "EMA slow (1m)" });
-  ctEmaFast5m = ctChart.addLineSeries({ color: "#ffb84f", lineWidth: 2, title: "EMA fast (5m)" });
-  ctEmaSlow5m = ctChart.addLineSeries({ color: "#ff5f8f", lineWidth: 2, title: "EMA slow (5m)" });
+  ctEmaFast1m = ctChart.addLineSeries({ color: "#4f9dff", lineWidth: 1, title: "EMA fast (4m HA)" });
+  ctEmaSlow1m = ctChart.addLineSeries({ color: "#a259ff", lineWidth: 1, title: "EMA slow (4m HA)" });
+  ctEmaFast5m = ctChart.addLineSeries({ color: "#ffb84f", lineWidth: 2, title: "EMA fast (8m HA)" });
+  ctEmaSlow5m = ctChart.addLineSeries({ color: "#ff5f8f", lineWidth: 2, title: "EMA slow (8m HA)" });
 
   document.getElementById("ct-legend").innerHTML = `
-    <span style="color:#4f9dff;">─ EMA fast 1m</span>
-    <span style="color:#a259ff;">─ EMA slow 1m</span>
-    <span style="color:#ffb84f;">─ EMA fast 5m</span>
-    <span style="color:#ff5f8f;">─ EMA slow 5m</span>
+    <span style="color:#4f9dff;">─ EMA fast 4m HA</span>
+    <span style="color:#a259ff;">─ EMA slow 4m HA</span>
+    <span style="color:#ffb84f;">─ EMA fast 8m HA</span>
+    <span style="color:#ff5f8f;">─ EMA slow 8m HA</span>
     <span style="color:#26a269;">▲ вход</span>
     <span style="color:#d64545;">▼ выход</span>`;
 
@@ -780,19 +835,45 @@ function initChartTab() {
   });
 }
 
-["ct-symbols", "ct-tf", "ct-direction"].forEach((id) => {
+["ct-symbols", "ct-tf", "ct-direction", "ct-candle-type"].forEach((id) => {
   document.getElementById(id).addEventListener("click", (e) => {
     const label = e.target.closest("label[data-val]");
     if (!label) return;
     document.querySelectorAll(`#${id} label`).forEach((l) => l.classList.remove("checked"));
     label.classList.add("checked");
-    if (id === "ct-tf" && ctLastData) renderChartTabTimeframe();
+    if ((id === "ct-tf" || id === "ct-candle-type") && ctLastData) renderChartTabTimeframe();
   });
 });
 
 function getCtSymbol() {
   const checked = document.querySelector("#ct-symbols label.checked");
   return checked ? checked.dataset.val : "BTCUSDT";
+}
+
+// Keep the chart's right price scale readable and close to exchange quoting:
+// majors use cents; altcoins show up to four decimal places.
+function getCtPriceFormat() {
+  const symbol = getCtSymbol();
+  const precision = (symbol === "BTCUSDT" || symbol === "ETHUSDT") ? 2 : 4;
+  return {
+    type: "price",
+    precision,
+    minMove: 1 / (10 ** precision),
+  };
+}
+
+function formatCtPrice(price) {
+  return Number(price).toFixed(getCtPriceFormat().precision);
+}
+
+function applyCtPriceFormat() {
+  const priceFormat = getCtPriceFormat();
+
+  [ctCandleSeries, ctEmaFast1m, ctEmaSlow1m, ctEmaFast5m, ctEmaSlow5m]
+    .filter(Boolean)
+    .forEach((series) => series.applyOptions({ priceFormat }));
+
+  ctTradeLevelSeries.forEach((series) => series.applyOptions({ priceFormat }));
 }
 function getCtTf() {
   const checked = document.querySelector("#ct-tf label.checked");
@@ -802,6 +883,14 @@ function getCtDirection() {
   const checked = document.querySelector("#ct-direction label.checked");
   return checked ? checked.dataset.val : "both";
 }
+
+document.querySelectorAll("#live-candle-type label").forEach((label) => {
+  label.addEventListener("click", () => {
+    document.querySelectorAll("#live-candle-type label").forEach((l) => l.classList.remove("checked"));
+    label.classList.add("checked");
+    if (liveChart) refreshCandles();
+  });
+});
 
 document.getElementById("ct-load-btn").addEventListener("click", loadChartTabData);
 
@@ -895,19 +984,76 @@ function dedupSorted(rows, timeKey = "time") {
   });
 }
 
+function fmtHmFromUnix(ts) {
+  const d = new Date(ts * 1000);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function find8mConfirmationTimeForTrade(trade) {
+  if (!trade || !ctLastData || !trade.entry_time) return null;
+  const rows8m = ctLastData.candles_8m || [];
+  if (!rows8m.length) return null;
+
+  const entryTs = toUnixTime(trade.entry_time);
+  const isLong = (trade.direction || "").toLowerCase() === "long";
+  const isShort = (trade.direction || "").toLowerCase() === "short";
+
+  let lastConfirmTs = null;
+  for (const row of rows8m) {
+    const ts = toUnixTime(row.time);
+    if (ts > entryTs) break;
+    if (isLong && row.cross_up) lastConfirmTs = ts;
+    if (isShort && row.cross_down) lastConfirmTs = ts;
+  }
+  return lastConfirmTs;
+}
+
 function renderChartTabTimeframe(opts = {}) {
   if (!ctLastData) return;
   const fitContent = opts.fitContent !== false;
   const tf = getCtTf();
+  const candleType = getCtCandleType();
+  const emaFastPeriod = parseInt(document.getElementById("ct-ema-fast").value, 10) || 7;
+  const emaSlowPeriod = parseInt(document.getElementById("ct-ema-slow").value, 10) || 133;
   const key = tf === "4m" ? "candles_4m" : tf === "8m" ? "candles_8m" : "candles_1h";
   const rows = ctLastData[key] || [];
 
-  const bars = rows.map((c) => ({
+  const rawBars = rows.map((c) => ({
     time: toUnixTime(c.time), open: c.open, high: c.high, low: c.low, close: c.close,
   }));
+  const bars = normalizeBarsForCandleType(rawBars, candleType);
+  applyCtPriceFormat();
   ctCandleSeries.setData(dedupSorted(bars));
 
-  if (tf === "4m") {
+  if (candleType === "heikin") {
+    if (tf === "4m") {
+      const rawBars4m = (ctLastData["candles_4m"] || []).map((c) => ({
+        time: toUnixTime(c.time), open: c.open, high: c.high, low: c.low, close: c.close,
+      }));
+      const rawBars8m = (ctLastData["candles_8m"] || []).map((c) => ({
+        time: toUnixTime(c.time), open: c.open, high: c.high, low: c.low, close: c.close,
+      }));
+      const haBars4m = buildHeikinAshiBars(rawBars4m);
+      const haBars8m = buildHeikinAshiBars(rawBars8m);
+      ctEmaFast1m.setData(dedupSorted(computeSeriesEmaFromBars(haBars4m, emaFastPeriod)));
+      ctEmaSlow1m.setData(dedupSorted(computeSeriesEmaFromBars(haBars4m, emaSlowPeriod)));
+      ctEmaFast5m.setData(dedupSorted(computeSeriesEmaFromBars(haBars8m, emaFastPeriod)));
+      ctEmaSlow5m.setData(dedupSorted(computeSeriesEmaFromBars(haBars8m, emaSlowPeriod)));
+    } else if (tf === "8m") {
+      const haBars8m = buildHeikinAshiBars(rawBars);
+      ctEmaFast1m.setData([]);
+      ctEmaSlow1m.setData([]);
+      ctEmaFast5m.setData(dedupSorted(computeSeriesEmaFromBars(haBars8m, emaFastPeriod)));
+      ctEmaSlow5m.setData(dedupSorted(computeSeriesEmaFromBars(haBars8m, emaSlowPeriod)));
+    } else {
+      ctEmaFast1m.setData([]);
+      ctEmaSlow1m.setData([]);
+      ctEmaFast5m.setData([]);
+      ctEmaSlow5m.setData([]);
+    }
+  } else if (tf === "4m") {
     ctEmaFast1m.setData(dedupSorted(rows.filter((c) => c.ema_fast != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_fast }))));
     ctEmaSlow1m.setData(dedupSorted(rows.filter((c) => c.ema_slow != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_slow }))));
     ctEmaFast5m.setData(dedupSorted(rows.filter((c) => c.ema_fast_8m != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_fast_8m }))));
@@ -918,19 +1064,18 @@ function renderChartTabTimeframe(opts = {}) {
     ctEmaFast5m.setData(dedupSorted(rows.filter((c) => c.ema_fast != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_fast }))));
     ctEmaSlow5m.setData(dedupSorted(rows.filter((c) => c.ema_slow != null).map((c) => ({ time: toUnixTime(c.time), value: c.ema_slow }))));
   } else {
-    // 1h: context only, no EMA overlay computed server-side for this tf
     ctEmaFast1m.setData([]);
     ctEmaSlow1m.setData([]);
     ctEmaFast5m.setData([]);
     ctEmaSlow5m.setData([]);
   }
 
-  // trade markers: only meaningful on 4m/8m where entry/exit timestamps
-  // land on real bars; on 1h they'd be too imprecise to place reliably.
   if (tf === "4m" || tf === "8m") {
     setTradeMarkers(ctLastData.trades || []);
+    renderTradeLevels(ctLastData.trades || [], tf);
   } else {
     ctCandleSeries.setMarkers([]);
+    renderTradeLevels([], tf);
   }
 
   if (ctLastData.data_start && ctLastData.data_end) {
@@ -949,39 +1094,183 @@ function numberTrades(trades) {
     .map((t, i) => ({ ...t, tradeNum: i + 1 }));
 }
 
+function buildSignalValidationMarkers(rows, tf, selectedEntryIso = null) {
+  if (tf !== "4m" || !rows || !rows.length || !selectedEntryIso) return [];
+
+  const targetTime = toUnixTime(selectedEntryIso);
+  const targetIdx = rows.findIndex((c) => toUnixTime(c.time) >= targetTime);
+  if (targetIdx === -1) return [];
+
+  const fromIdx = Math.max(0, targetIdx - 8);
+  const toIdx = Math.min(rows.length - 1, targetIdx + 8);
+
+  const markers = [];
+  for (let i = fromIdx; i <= toIdx; i += 1) {
+    const row = rows[i];
+    const time = toUnixTime(row.time);
+    const crossUp = !!row.cross_up;
+    const crossDown = !!row.cross_down;
+    const confirmUp8m = !!row.cross_up_8m;
+    const confirmDown8m = !!row.cross_down_8m;
+    const longSignal = !!row.long_signal;
+    const shortSignal = !!row.short_signal;
+
+    if (!(crossUp || crossDown || longSignal || shortSignal)) continue;
+
+    const isLong = longSignal || crossUp;
+    const confirmed = isLong ? confirmUp8m : confirmDown8m;
+
+    if (crossUp || crossDown) {
+      markers.push({
+        time,
+        position: isLong ? "belowBar" : "aboveBar",
+        color: "#60a5fa",
+        shape: isLong ? "arrowUp" : "arrowDown",
+        text: "4m ✓",
+      });
+
+      markers.push({
+        time,
+        position: isLong ? "inBar" : "inBar",
+        color: confirmed ? "#22c55e" : "#ef4444",
+        shape: "circle",
+        text: confirmed ? "8m ✓" : "×",
+      });
+    }
+
+    if (longSignal || shortSignal) {
+      markers.push({
+        time,
+        position: isLong ? "belowBar" : "aboveBar",
+        color: "#f59e0b",
+        shape: "square",
+        text: "SIGNAL",
+      });
+    }
+  }
+
+  return markers;
+}
+
 function setTradeMarkers(trades) {
   const numbered = numberTrades(trades);
   const markers = [];
+
+  const tf = getCtTf();
+  const rows = tf === "4m"
+    ? (ctLastData?.candles_4m || [])
+    : tf === "8m"
+      ? (ctLastData?.candles_8m || [])
+      : [];
+
+  markers.push(...buildSignalValidationMarkers(rows, tf, ctSelectedTradeEntryIso));
+
   numbered.forEach((t) => {
     markers.push({
-      time: Math.floor(new Date(t.entry_time).getTime() / 1000),
+      time: toUnixTime(t.entry_time),
       position: t.direction === "long" ? "belowBar" : "aboveBar",
       color: t.direction === "long" ? "#26a269" : "#d64545",
       shape: t.direction === "long" ? "arrowUp" : "arrowDown",
-      text: `#${t.tradeNum} ${t.direction === "long" ? "LONG" : "SHORT"} @ ${Number(t.entry_price).toFixed(2)}`,
+      text: `#${t.tradeNum} ${t.direction === "long" ? "LONG" : "SHORT"}`,
     });
 
-    // PnL label on the exit marker: green text/marker for profit,
-    // red for loss, so a closed trade's outcome is readable directly
-    // on the chart without opening the trades table. Same #N as the
-    // entry marker above, so entry/exit pairs are visually traceable.
     const pnlPct = Number(t.pnl_pct);
     const isProfit = Number.isFinite(pnlPct) ? pnlPct >= 0 : (t.exit_reason === "TP");
     const pnlColor = isProfit ? "#26a269" : "#d64545";
     const pnlText = Number.isFinite(pnlPct)
       ? `#${t.tradeNum} ${t.exit_reason} ${isProfit ? "+" : ""}${pnlPct.toFixed(2)}%`
-      : `#${t.tradeNum} ${t.exit_reason} @ ${Number(t.exit_price).toFixed(2)}`;
+      : `#${t.tradeNum} ${t.exit_reason}`;
 
     markers.push({
-      time: Math.floor(new Date(t.exit_time).getTime() / 1000),
+      time: toUnixTime(t.exit_time),
       position: t.direction === "long" ? "aboveBar" : "belowBar",
       color: pnlColor,
       shape: "circle",
       text: pnlText,
     });
   });
-  markers.sort((a, b) => a.time - b.time);
+
+  markers.sort((a, b) => {
+    if (a.time !== b.time) return a.time - b.time;
+    return String(a.text || "").localeCompare(String(b.text || ""));
+  });
   ctCandleSeries.setMarkers(markers);
+}
+
+// Short horizontal price-level segments at the *exact* entry/exit price of
+// each trade -- unlike the arrow markers above (which snap to bar high/low
+// and can look visually misleading), these are drawn on the real price
+// scale using a line series whose data only exists for a few bars either
+// side of the event, so it reads as a short tick rather than a full-width
+// line across the whole chart.
+function renderTradeLevels(trades, tf) {
+  // clear previous batch first -- otherwise segments pile up on every redraw
+  ctTradeLevelSeries.forEach((s) => ctChart.removeSeries(s));
+  ctTradeLevelSeries = [];
+
+  const stepSec = CT_TF_SECONDS[tf] || 240;
+  const halfSpan = TRADE_LEVEL_BARS * stepSec;
+
+  function addSegment(unixTime, price, color, label, lineStyle = LightweightCharts.LineStyle.Solid, markerText = null) {
+    const series = ctChart.addLineSeries({
+      color,
+      lineWidth: 2,
+      lineStyle,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      title: label,
+      priceFormat: getCtPriceFormat(),
+    });
+    series.setData([
+      { time: unixTime - halfSpan, value: price },
+      { time: unixTime + halfSpan, value: price },
+    ]);
+    series.setMarkers([{
+      time: unixTime,
+      position: "inBar",
+      color,
+      shape: "circle",
+      text: markerText || formatCtPrice(price),
+    }]);
+    ctTradeLevelSeries.push(series);
+  }
+
+  trades.forEach((t) => {
+    const entryTs = toUnixTime(t.entry_time);
+    const entryPrice = Number(t.entry_price);
+    const entryColor = t.direction === "long" ? "#26a269" : "#d64545";
+
+    addSegment(
+      entryTs,
+      entryPrice,
+      entryColor,
+      `entry ${formatCtPrice(t.entry_price)}`
+    );
+
+    const confirmTs = find8mConfirmationTimeForTrade(t);
+    if (confirmTs && Number.isFinite(entryPrice)) {
+      addSegment(
+        confirmTs,
+        entryPrice,
+        "#7dd3fc",
+        `8m confirm since ${fmtHmFromUnix(confirmTs)}`,
+        LightweightCharts.LineStyle.Dashed,
+        `8m ${fmtHmFromUnix(confirmTs)}`
+      );
+    }
+
+    const exitPrice = t.exit_price != null ? Number(t.exit_price) : (t.exit_reason === "TP" ? Number(t.take_price) : Number(t.stop_price));
+    const exitColor = t.exit_reason === "TP" ? "#26a269" : "#d64545";
+    if (Number.isFinite(exitPrice)) {
+      addSegment(
+        toUnixTime(t.exit_time),
+        exitPrice,
+        exitColor,
+        `exit ${formatCtPrice(exitPrice)}`
+      );
+    }
+  });
 }
 
 function renderChartTabTrades(trades) {
@@ -991,8 +1280,16 @@ function renderChartTabTrades(trades) {
     return;
   }
   const numbered = numberTrades(trades);
+
+  if (!ctSelectedTradeEntryIso && numbered.length) {
+    ctSelectedTradeEntryIso = numbered[numbered.length - 1].entry_time;
+  }
+  if (ctSelectedTradeEntryIso && !numbered.some((t) => t.entry_time === ctSelectedTradeEntryIso)) {
+    ctSelectedTradeEntryIso = numbered[numbered.length - 1].entry_time;
+  }
+
   body.innerHTML = numbered.slice().reverse().map((t) => `
-    <tr class="ct-trade-row" data-entry="${t.entry_time}" style="cursor:pointer;">
+    <tr class="ct-trade-row ${t.entry_time === ctSelectedTradeEntryIso ? 'selected' : ''}" data-entry="${t.entry_time}" style="cursor:pointer;">
       <td>#${t.tradeNum}</td>
       <td class="${t.direction === 'long' ? 'pos-long' : 'pos-short'}">${t.direction.toUpperCase()}</td>
       <td>${fmtTime(t.entry_time)}</td>
@@ -1001,12 +1298,18 @@ function renderChartTabTrades(trades) {
     </tr>`).join("");
 
   body.querySelectorAll("tr.ct-trade-row").forEach((row) => {
-    row.addEventListener("click", () => scrollChartToTrade(row.dataset.entry));
+    row.addEventListener("click", () => {
+      ctSelectedTradeEntryIso = row.dataset.entry;
+      renderChartTabTrades(ctLastData?.trades || []);
+      renderChartTabTimeframe({ fitContent: false });
+      scrollChartToTrade(row.dataset.entry);
+    });
   });
 }
 
 function scrollChartToTrade(entryIso) {
   if (!ctChart || !ctLastData) return;
+  ctSelectedTradeEntryIso = entryIso;
   const tf = getCtTf();
   const key = tf === "8m" ? "candles_8m" : "candles_4m";
   const rows = ctLastData[key] || [];

@@ -429,6 +429,16 @@ def backtest_chart_data(symbol: str, ema_fast: int, ema_slow: int, direction: st
             "ema_slow": float(r["ema_slow"]) if pd.notna(r["ema_slow"]) else None,
             "ema_fast_8m": float(ema_f8_on_base_view.loc[ts]) if ts in ema_f8_on_base_view.index and pd.notna(ema_f8_on_base_view.loc[ts]) else None,
             "ema_slow_8m": float(ema_s8_on_base_view.loc[ts]) if ts in ema_s8_on_base_view.index and pd.notna(ema_s8_on_base_view.loc[ts]) else None,
+
+            # Raw strategy-decision flags. The Chart tab uses these to show
+            # whether a 4m EMA cross was confirmed by the aligned closed 8m
+            # bar and whether that combination became an executable signal.
+            "cross_up": bool(r.get("cross_up", False)),
+            "cross_down": bool(r.get("cross_down", False)),
+            "cross_up_8m": bool(r.get("cross_up_8m", False)),
+            "cross_down_8m": bool(r.get("cross_down_8m", False)),
+            "long_signal": bool(r.get("long_signal", False)),
+            "short_signal": bool(r.get("short_signal", False)),
         }
         for ts, r in view_base.iterrows()
     ]
