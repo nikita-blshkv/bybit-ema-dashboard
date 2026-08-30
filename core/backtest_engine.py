@@ -570,7 +570,7 @@ def _summarize(trades_df, initial_equity, final_equity, max_dd):
         "winrate_pct": (wins / len(trades_df)) * 100.0,
         "net_pnl_usdt": float(final_equity - initial_equity),
         "return_pct": ((final_equity / initial_equity) - 1.0) * 100.0,
-        "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else float("inf"),
+        "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else None,
         "max_drawdown_pct": float(max_dd),
         "final_equity": float(final_equity),
     }

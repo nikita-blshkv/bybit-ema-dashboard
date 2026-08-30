@@ -695,7 +695,8 @@ document.getElementById("backtest-run-btn").addEventListener("click", async () =
     showToast("Бэктест завершён.");
   } catch (e) {
     console.error(e);
-    showToast("Ошибка бэктеста. См. консоль.");
+    const msg = e?.message ? `Ошибка бэктеста: ${e.message}` : "Ошибка бэктеста. См. консоль.";
+    showToast(msg);
   } finally {
     clearInterval(progressTimer);
     btn.disabled = false;
