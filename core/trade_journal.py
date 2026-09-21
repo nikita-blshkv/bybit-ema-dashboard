@@ -18,8 +18,33 @@ broken dict all the way to the JSON encoder and crashing the endpoint.
 
 import json
 import csv
-import fcntl
 import os
+import sys
+
+if sys.platform == "win32":
+    import msvcrt
+
+    def _lock_file(f, exclusive=True):
+        try:
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+        except OSError:
+            pass
+
+    def _unlock_file(f):
+        try:
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+else:
+    import fcntl
+
+    def _lock_file(f, exclusive=True):
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+
+    def _unlock_file(f):
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -45,7 +70,7 @@ class _locked_file:
 
     def __enter__(self):
         self.f = open(self.path, self.mode, newline="", encoding="utf-8")
-        fcntl.flock(self.f.fileno(), fcntl.LOCK_EX)
+        _lock_file(self.f, exclusive=True)
         return self.f
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -53,7 +78,7 @@ class _locked_file:
             self.f.flush()
             os.fsync(self.f.fileno())
         finally:
-            fcntl.flock(self.f.fileno(), fcntl.LOCK_UN)
+            _unlock_file(self.f)
             self.f.close()
         return False
 
@@ -68,22 +93,22 @@ def load_open_positions():
         return []
     with open(path, "r", encoding="utf-8") as f:
         try:
-            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+            _lock_file(f, exclusive=False)
             return json.load(f)
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            _unlock_file(f)
 
 
 def save_open_positions(positions):
     path = config.OPEN_POSITIONS_FILE
     with open(path, "w", encoding="utf-8") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        _lock_file(f, exclusive=True)
         try:
             json.dump(positions, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            _unlock_file(f)
 
 
 def add_open_position(position: dict):
@@ -166,7 +191,7 @@ def load_trade_log(limit: int = 500):
     rows = []
     skipped = 0
     with open(path, "r", encoding="utf-8") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        _lock_file(f, exclusive=False)
         try:
             reader = csv.reader(f)
             try:
@@ -184,7 +209,7 @@ def load_trade_log(limit: int = 500):
                     continue
                 rows.append(row)
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            _unlock_file(f)
 
     if skipped:
         print(f"[trade_journal] load_trade_log: skipped {skipped} malformed row(s) in {path}")
@@ -223,7 +248,7 @@ def load_equity_curve(limit: int = 2000):
     rows = []
     skipped = 0
     with open(path, "r", encoding="utf-8") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        _lock_file(f, exclusive=False)
         try:
             reader = csv.reader(f)
             try:
@@ -237,7 +262,7 @@ def load_equity_curve(limit: int = 2000):
                     continue
                 rows.append(dict(zip(header, raw_row)))
         finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            _unlock_file(f)
 
     if skipped:
         print(f"[trade_journal] load_equity_curve: skipped {skipped} malformed row(s) in {path}")
