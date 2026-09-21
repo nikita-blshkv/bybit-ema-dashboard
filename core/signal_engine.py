@@ -158,3 +158,90 @@ def latest_signal(df_with_signals: pd.DataFrame):
     if bool(last.get("short_signal", False)):
         return ts, "short", float(last["close"])
     return None, None, None
+
+
+# ---------------------------------------------------------------------------
+# Multi-strategy support (added Sep 2026). Generic signal computation that
+# takes base_tf/confirm_tf/use_heikin_ashi from a config.STRATEGIES entry,
+# instead of the hardcoded 4m/8m HA logic above. Used by both the backtest
+# engine and the live engine so Back Test and Live Paper always run the
+# exact same signal logic.
+# ---------------------------------------------------------------------------
+
+def compute_signals_for_strategy(df_1m: pd.DataFrame, strategy: dict) -> pd.DataFrame:
+    """
+    df_1m: raw 1-minute OHLC dataframe indexed by UTC timestamp.
+    strategy: one entry from config.STRATEGIES, e.g.
+        {"base_tf": "4min", "confirm_tf": "8min", "use_heikin_ashi": True,
+         "ema_fast": 7, "ema_slow": 133, "direction": "both", ...}
+
+    Returns a dataframe indexed like the base timeframe, with columns:
+        open, high, low, close (REAL, non-HA prices, for entry/exit pricing)
+        ema_fast, ema_slow, cross_up, cross_down,
+        cross_up_confirm, cross_down_confirm,
+        long_signal, short_signal
+    """
+    base_tf = strategy["base_tf"]
+    confirm_tf = strategy["confirm_tf"]
+    use_ha = strategy.get("use_heikin_ashi", False)
+    fast = strategy["ema_fast"]
+    slow = strategy["ema_slow"]
+    direction = strategy.get("direction", "both")
+
+    base_raw = resample_ohlc_right(df_1m, base_tf)
+    confirm_raw = resample_ohlc_right(df_1m, confirm_tf)
+
+    base_for_ema = to_heikin_ashi(base_raw) if use_ha else base_raw
+    confirm_for_ema = to_heikin_ashi(confirm_raw) if use_ha else confirm_raw
+
+    out = base_raw.copy()  # keep REAL prices for TP/SL simulation
+    out["ema_fast"] = base_for_ema["close"].ewm(span=fast, adjust=False).mean()
+    out["ema_slow"] = base_for_ema["close"].ewm(span=slow, adjust=False).mean()
+    diff = out["ema_fast"] - out["ema_slow"]
+    prev = diff.shift(1)
+    out["cross_up"] = (prev <= 0) & (diff > 0)
+    out["cross_down"] = (prev >= 0) & (diff < 0)
+
+    ema_fc = confirm_for_ema["close"].ewm(span=fast, adjust=False).mean()
+    ema_sc = confirm_for_ema["close"].ewm(span=slow, adjust=False).mean()
+    diffc = ema_fc - ema_sc
+    prevc = diffc.shift(1)
+    cu_c = (prevc <= 0) & (diffc > 0)
+    cd_c = (prevc >= 0) & (diffc < 0)
+
+    out["cross_up_confirm"] = map_htf_no_lookahead(out.index, cu_c.astype(float)).fillna(0).astype(bool)
+    out["cross_down_confirm"] = map_htf_no_lookahead(out.index, cd_c.astype(float)).fillna(0).astype(bool)
+
+    out["long_signal"] = False
+    out["short_signal"] = False
+    if direction in ("both", "long"):
+        out["long_signal"] = out["cross_up"] & out["cross_up_confirm"]
+    if direction in ("both", "short"):
+        out["short_signal"] = out["cross_down"] & out["cross_down_confirm"]
+
+    return out
+
+
+def dedup_signal_rows(all_signal_rows: list, window_min: int) -> list:
+    """
+    all_signal_rows: list of dicts, each with at least
+        {"time": pd.Timestamp, "symbol": str, "direction": "long"|"short", ...}
+    Chained dedup: sorts by time, then for each (symbol, direction) key,
+    drops any row that falls within window_min minutes of the last KEPT
+    row for that same key -- regardless of which strategy produced it.
+    Returns the kept rows, sorted by time, same dict shape as input.
+    """
+    if not all_signal_rows:
+        return []
+    rows = sorted(all_signal_rows, key=lambda r: r["time"])
+    window = pd.Timedelta(minutes=window_min)
+    kept = []
+    last_seen = {}
+    for row in rows:
+        key = (row["symbol"], row["direction"])
+        prev_ts = last_seen.get(key)
+        if prev_ts is not None and (row["time"] - prev_ts) <= window:
+            continue
+        kept.append(row)
+        last_seen[key] = row["time"]
+    return kept

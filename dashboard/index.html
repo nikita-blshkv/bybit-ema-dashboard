@@ -32,27 +32,31 @@
       <div class="panel">
         <h2>Параметры стратегии</h2>
 
-        <div class="field-row">
-          <div class="field">
-            <label>EMA fast</label>
-            <input type="number" id="p-ema-fast" value="7" min="1">
-          </div>
-          <div class="field">
-            <label>EMA slow</label>
-            <input type="number" id="p-ema-slow" value="133" min="2">
+        <div class="field">
+          <label>Активные стратегии (из config.py, не редактируются здесь)</label>
+          <div id="p-strategies-info" style="display:flex; flex-direction:column; gap:6px; font-size:13px; color:#c7cbd4;">
+            Загрузка...
           </div>
         </div>
 
-        <div class="field-row">
-          <div class="field">
-            <label>Take profit, %</label>
-            <input type="number" id="p-tp" value="0.5" step="0.1" min="0.1">
+        <div class="field" id="p-bybit-keys-block">
+          <label>Bybit demo API (для реальных ордеров на demo-аккаунте)</label>
+          <div id="p-keys-status" style="font-size:12px; color:#8b93a3; margin-bottom:6px;">Проверка...</div>
+          <div class="field-row">
+            <input type="text" id="p-bybit-api-key" placeholder="API key" autocomplete="off" style="flex:1;">
+            <input type="password" id="p-bybit-api-secret" placeholder="API secret" autocomplete="off" style="flex:1;">
           </div>
-          <div class="field">
-            <label>Stop loss, %</label>
-            <input type="number" id="p-sl" value="1.0" step="0.1" min="0.1">
-          </div>
+          <button id="p-bybit-keys-save" class="btn" type="button" style="margin-top:6px; width:100%;">Сохранить ключи</button>
         </div>
+
+        <!-- Скрытые поля оставлены для обратной совместимости с
+             getStrategyEmaPeriods() (EMA-оверлей на графике) и старым
+             /api/params -- сама live-торговля их больше не читает,
+             TP/SL/EMA каждой сделки берутся из config.STRATEGIES. -->
+        <input type="hidden" id="p-ema-fast" value="7">
+        <input type="hidden" id="p-ema-slow" value="133">
+        <input type="hidden" id="p-tp" value="0.5">
+        <input type="hidden" id="p-sl" value="1.0">
 
         <div class="field">
           <label>Направление</label>
@@ -143,10 +147,10 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Symbol</th><th>Dir</th><th>Entry</th><th>Entry price</th><th>TP</th><th>SL</th><th>Notional</th><th>Sync</th></tr>
+              <tr><th>Symbol</th><th>Strategy</th><th>Dir</th><th>Entry</th><th>Entry price</th><th>TP</th><th>SL</th><th>Notional</th><th>Sync</th></tr>
             </thead>
             <tbody id="open-positions-body">
-              <tr class="empty-row"><td colspan="8">Нет открытых позиций</td></tr>
+              <tr class="empty-row"><td colspan="9">Нет открытых позиций</td></tr>
             </tbody>
           </table>
         </div>
@@ -170,10 +174,10 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Symbol</th><th>Dir</th><th>Exit</th><th>Entry</th><th>Exit price</th><th>Reason</th><th>PnL %</th><th>PnL USDT</th><th>Closed</th></tr>
+              <tr><th>Symbol</th><th>Strategy</th><th>Dir</th><th>Exit</th><th>Entry</th><th>Exit price</th><th>Reason</th><th>PnL %</th><th>PnL USDT</th><th>Closed</th></tr>
             </thead>
             <tbody id="trade-log-body">
-              <tr class="empty-row"><td colspan="9">Пока нет закрытых сделок</td></tr>
+              <tr class="empty-row"><td colspan="10">Пока нет закрытых сделок</td></tr>
             </tbody>
           </table>
         </div>
@@ -219,11 +223,11 @@
         <div class="field-row">
           <div class="field">
             <label>Take profit, %</label>
-            <input type="number" id="bt-tp" value="2.8" step="0.1" min="0.1">
+            <input type="number" id="bt-tp" value="0.7" step="0.1" min="0.1">
           </div>
           <div class="field">
             <label>Stop loss, %</label>
-            <input type="number" id="bt-sl" value="1.2" step="0.1" min="0.1">
+            <input type="number" id="bt-sl" value="0.9" step="0.1" min="0.1">
           </div>
         </div>
 
@@ -263,6 +267,10 @@
           <input type="number" id="bt-initial-equity" value="100000" min="1">
         </div>
 
+        <div class="radio-row" id="bt-mode" style="margin-bottom:10px;">
+          <label data-val="single" class="checked">Одна стратегия (EMA/TP/SL вручную)</label>
+          <label data-val="dual">Dual Strategy (4m/8m + 2m/7m, из конфига)</label>
+        </div>
         <button id="backtest-run-btn" class="btn btn-primary">Запустить бэктест</button>
       </div>
 
@@ -283,6 +291,7 @@
               <div class="stat-card"><div class="label">Max drawdown</div><div class="value" id="bt-stat-dd">—</div></div>
               <div class="stat-card"><div class="label">Сделок</div><div class="value" id="bt-stat-trades">—</div></div>
             </div>
+            <div id="bt-by-strategy" class="stat-grid" style="display:none; margin:12px 0;"></div>
 
             <div class="section-title">Equity curve</div>
             <div id="bt-chart-container" style="height:300px; border:1px solid var(--border); border-radius:8px; overflow:hidden;"></div>

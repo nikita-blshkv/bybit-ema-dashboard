@@ -33,6 +33,7 @@ import json
 import time
 import threading
 import uuid
+import pandas as pd
 from datetime import datetime, timezone
 
 from . import config
@@ -256,6 +257,7 @@ def _check_and_close_open_positions(latest_prices: dict):
             trade_journal.append_closed_trade({
                 "id": pos["id"],
                 "symbol": symbol,
+                "strategy": pos.get("strategy", ""),
                 "direction": pos["direction"],
                 "entry_time": pos["entry_time"],
                 "exit_time": exit_time_iso,
@@ -320,6 +322,7 @@ def _check_and_close_open_positions(latest_prices: dict):
             trade_journal.append_closed_trade({
                 "id": pos["id"],
                 "symbol": symbol,
+                "strategy": pos.get("strategy", ""),
                 "direction": pos["direction"],
                 "entry_time": pos["entry_time"],
                 "exit_time": price_info["time"],
@@ -455,18 +458,37 @@ def backfill_trade_log_from_exchange(lookback_records: int = 50):
 
 def _try_open_new_positions(params: dict, signals: dict, latest_close: dict):
     """
-    signals: {symbol: (timestamp, direction_or_None, price_or_None)}
+    signals: {(symbol, strategy_name): (timestamp, direction_or_None, price_or_None, tp_pct, sl_pct)}
+    Dedup across strategies: within DEDUP_WINDOW_MIN of an already-open
+    position on the same symbol+direction, a new signal is skipped -- same
+    rule as the backtest's dedup_signal_rows(), so live and backtest never
+    diverge on this behavior.
     """
     open_positions = trade_journal.load_open_positions()
     max_open = int(params["max_open_positions"])
+    window = pd.Timedelta(minutes=config.DEDUP_WINDOW_MIN)
 
-    for symbol, (ts, direction, price) in signals.items():
+    ordered = sorted(signals.items(), key=lambda kv: kv[1][0] if kv[1][0] is not None else pd.Timestamp.min)
+
+    for (symbol, strategy_name), (ts, direction, price, tp_pct, sl_pct) in ordered:
         if direction is None:
             continue
         if len(open_positions) >= max_open:
             continue
-        already_open = any(p["symbol"] == symbol for p in open_positions)
-        if already_open:
+
+        recent_same_key = False
+        for p in open_positions:
+            if p["symbol"] != symbol or p["direction"] != direction:
+                continue
+            try:
+                p_ts = pd.Timestamp(p["entry_time"])
+                if abs(ts - p_ts) <= window:
+                    recent_same_key = True
+                    break
+            except Exception:
+                recent_same_key = True
+                break
+        if recent_same_key:
             continue
 
         margin = float(params["margin_per_trade"])
@@ -476,16 +498,17 @@ def _try_open_new_positions(params: dict, signals: dict, latest_close: dict):
         position = {
             "id": str(uuid.uuid4()),
             "symbol": symbol,
+            "strategy": strategy_name,
             "direction": direction,
             "entry_time": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
             "entry_price": float(price),
             "margin": margin,
             "leverage": leverage,
             "notional": notional,
-            "tp_pct": float(params["tp_pct"]),
-            "sl_pct": float(params["sl_pct"]),
-            "ema_fast": int(params["ema_fast"]),
-            "ema_slow": int(params["ema_slow"]),
+            "tp_pct": float(tp_pct),
+            "sl_pct": float(sl_pct),
+            "ema_fast": 7,
+            "ema_slow": 133,
         }
         # Mirror the paper position with a REAL market order + exchange-
         # side TP/SL on the Bybit demo account, so it keeps resolving on
@@ -557,32 +580,34 @@ def run_forever():
                 if symbol not in active_symbols:
                     continue
                 try:
-                    base_tf = config.STRATEGY_BASE_TF_LABEL
-                    df_base = data_store.sync_symbol_timeframe(
-                        symbol, base_tf, config.TIMEFRAMES[base_tf], min_candles=config.CANDLES_PER_TIMEFRAME
+                    # Sync raw 1m history once per symbol -- every strategy
+                    # resamples from this same 1m base so they always agree
+                    # on the underlying price data.
+                    df_1m = data_store.sync_symbol_timeframe(
+                        symbol, "1m", config.TIMEFRAMES["1m"],
+                        min_candles=max(config.CANDLES_PER_TIMEFRAME * 8, 500),
                     )
-                    if df_base.empty or len(df_base) < params["ema_slow"] + 5:
+                    if df_1m.empty:
                         continue
 
-                    latest_row = df_base.iloc[-1]
+                    latest_row = df_1m.iloc[-1]
                     latest_prices[symbol] = {
                         "high": float(latest_row["high"]),
                         "low": float(latest_row["low"]),
                         "close": float(latest_row["close"]),
-                        "time": df_base.index[-1].isoformat(),
+                        "time": df_1m.index[-1].isoformat(),
                     }
 
                     if running:
-                        with_signals = signal_engine.compute_signals(
-                            df_base, params["ema_fast"], params["ema_slow"], params["direction"]
-                        )
-                        ts, direction, price = signal_engine.latest_signal(with_signals)
-                        signals[symbol] = (ts, direction, price)
+                        for strat in config.STRATEGIES:
+                            if len(df_1m) < strat["ema_slow"] * 10:
+                                continue
+                            with_signals = signal_engine.compute_signals_for_strategy(df_1m, strat)
+                            ts, direction, price = signal_engine.latest_signal(with_signals)
+                            signals[(symbol, strat["name"])] = (ts, direction, price, strat["tp_pct"], strat["sl_pct"])
 
-                    # also keep the confirmation timeframe and 1h history in
-                    # sync for the chart, even if the engine is stopped --
-                    # charting should always work regardless of run state.
-                    for tf_label in (config.STRATEGY_CONFIRM_TF_LABEL, "1h"):
+                    # keep chart timeframes in sync regardless of run state.
+                    for tf_label in ("4m", "8m", "2m", "7m", "1h"):
                         data_store.sync_symbol_timeframe(
                             symbol, tf_label, config.TIMEFRAMES[tf_label], min_candles=config.CANDLES_PER_TIMEFRAME
                         )

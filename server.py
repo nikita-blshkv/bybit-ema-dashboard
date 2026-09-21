@@ -22,6 +22,7 @@ Endpoints:
 
 import threading
 import os
+import webbrowser
 from flask import Flask, jsonify, request, send_from_directory
 
 from core import config
@@ -33,12 +34,17 @@ from core import backtest_engine
 from core import bybit_trade_client
 from core.bybit_trade_client import BybitAuthError, BybitApiError
 
-app = Flask(__name__, static_folder="dashboard", static_url_path="")
+# config.RESOURCE_DIR resolves correctly both when running from source
+# (project root) and when frozen by PyInstaller (bundled read-only assets
+# dir, e.g. sys._MEIPASS on onefile builds) -- see core/config.py.
+DASHBOARD_DIR = str(config.RESOURCE_DIR / "dashboard")
+
+app = Flask(__name__, static_folder=DASHBOARD_DIR, static_url_path="")
 
 
 @app.route("/")
 def index():
-    return send_from_directory("dashboard", "index.html")
+    return send_from_directory(DASHBOARD_DIR, "index.html")
 
 
 @app.route("/api/status", methods=["GET"])
@@ -211,6 +217,71 @@ def api_backtest():
     return jsonify(result)
 
 
+@app.route("/api/bybit_keys", methods=["GET"])
+def api_bybit_keys_get():
+    """Returns whether demo keys are configured, WITHOUT ever exposing the
+    actual secret back to the browser (only a masked preview of the key)."""
+    from core import bybit_keys
+    key = bybit_keys.BYBIT_DEMO_API_KEY
+    masked = (key[:4] + "..." + key[-4:]) if len(key) > 8 else ("set" if key else "")
+    return jsonify({"configured": bybit_keys.keys_configured(), "api_key_masked": masked})
+
+
+@app.route("/api/bybit_keys", methods=["POST"])
+def api_bybit_keys_post():
+    """Saves Bybit demo API key/secret entered on the dashboard's Settings
+    panel. Takes effect immediately, no restart needed."""
+    from core import bybit_keys
+    body = request.get_json(force=True) or {}
+    api_key = body.get("api_key", "")
+    api_secret = body.get("api_secret", "")
+    if not api_key or not api_secret:
+        return jsonify({"error": "api_key и api_secret обязательны"}), 400
+    bybit_keys.set_demo_keys(api_key, api_secret)
+    return jsonify({"ok": True, "configured": bybit_keys.keys_configured()})
+
+
+@app.route("/api/strategies", methods=["GET"])
+def api_strategies():
+    """Exposes config.STRATEGIES to the frontend so the dashboard can
+    render each strategy's label/color without hardcoding them in JS."""
+    return jsonify({"strategies": config.STRATEGIES, "dedup_window_min": config.DEDUP_WINDOW_MIN})
+
+
+@app.route("/api/backtest_dual", methods=["POST"])
+def api_backtest_dual():
+    """Runs BOTH strategies from config.STRATEGIES in parallel over the
+    same symbol universe, with cross-strategy signal dedup, and returns
+    one combined equity curve plus a per-strategy breakdown."""
+    body = request.get_json(force=True) or {}
+
+    symbols = body.get("symbols", config.SYMBOLS)
+    direction = body.get("direction", config.DEFAULT_DIRECTION)
+    initial_equity = float(body.get("initial_equity", config.DEFAULT_INITIAL_EQUITY))
+    margin_per_trade = float(body.get("margin_per_trade", config.DEFAULT_MARGIN_PER_TRADE))
+    leverage = float(body.get("leverage", config.DEFAULT_LEVERAGE))
+    max_open_positions = int(body.get("max_open_positions", config.DEFAULT_MAX_OPEN_POSITIONS))
+    days = int(body.get("days", 90))
+    tie_break = body.get("tie_break", "sl_first")
+    if tie_break not in ("sl_first", "tp_first"):
+        tie_break = "sl_first"
+    dedup_window_min = int(body.get("dedup_window_min", config.DEDUP_WINDOW_MIN))
+
+    result = backtest_engine.run_backtest_dual(
+        symbols=symbols,
+        strategies=config.STRATEGIES,
+        direction=direction,
+        initial_equity=initial_equity,
+        margin_per_trade=margin_per_trade,
+        leverage=leverage,
+        max_open_positions=max_open_positions,
+        days=days,
+        tie_break=tie_break,
+        dedup_window_min=dedup_window_min,
+    )
+    return jsonify(result)
+
+
 @app.route("/api/backtest_progress")
 def api_backtest_progress():
     return jsonify(backtest_engine.get_backtest_progress())
@@ -279,7 +350,25 @@ if __name__ == "__main__":
     print("Starting 100-hour lookback backfill in background thread...")
     threading.Thread(target=_backfill_full_lookback, daemon=True).start()
 
-    print("Dashboard: http://127.0.0.1:5000")
     port = int(os.environ.get("PORT", 5001))
+    url = f"http://127.0.0.1:{port}"
+    print(f"Dashboard: {url}")
+
+    # Auto-open the dashboard in the user's default browser once the
+    # server is actually accepting connections -- runs in a background
+    # thread with a short delay so it never races Flask's own startup.
+    # Skipped when explicitly disabled (e.g. server deployments like
+    # Railway, where NO_BROWSER=1 is set) since there is no local
+    # display to open a browser on there anyway.
+    if os.environ.get("NO_BROWSER", "0") != "1":
+        def _open_browser():
+            import time as _time
+            _time.sleep(1.2)
+            try:
+                webbrowser.open(url)
+            except Exception as exc:
+                print(f"[startup] could not auto-open browser: {exc}")
+        threading.Thread(target=_open_browser, daemon=True).start()
+
     app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False, threaded=True)
 

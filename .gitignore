@@ -34,3 +34,26 @@ tools_local/
 .env
 *.pem
 *.key
+
+# PyInstaller build artifacts
+build/
+dist/
+
+# Backup/scratch files created during dual-strategy dev
+*.bak_before_dual_strategy
+*.bak_before_dashboard_keys
+*.bak_before_pyinstaller
+*.bak_tp_sl
+*.bak_dual_fix
+*.bak_before_frozen_static
+
+# One-off research/sweep scripts and their outputs (not part of the app)
+combined_strategy_*.py
+combined_strategy_*_summary.txt
+combined_strategy_*_trades.csv
+mgc_ha_backtest.py
+mgc_mtf_sweep.py
+mgc_mtf_sweep_results.csv
+
+# Ad-hoc screenshots saved into repo root
+Снимок экрана*.png

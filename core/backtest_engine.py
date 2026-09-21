@@ -574,3 +574,195 @@ def _summarize(trades_df, initial_equity, final_equity, max_dd):
         "max_drawdown_pct": float(max_dd),
         "final_equity": float(final_equity),
     }
+
+
+# ---------------------------------------------------------------------------
+# Dual-strategy backtest (added Sep 2026). Runs every entry in
+# config.STRATEGIES in parallel over the same symbol universe, each on its
+# own base_tf/confirm_tf/TP/SL, then merges + dedups signals across
+# strategies before simulating trades. Position sizing/leverage/equity are
+# shared (one combined equity curve), but each open position remembers
+# which strategy it came from so it exits on THAT strategy's TP/SL and its
+# own base_tf candles.
+# ---------------------------------------------------------------------------
+
+def run_backtest_dual(
+    symbols,
+    strategies: list,
+    direction: str,
+    initial_equity: float,
+    margin_per_trade: float,
+    leverage: float,
+    max_open_positions: int,
+    days: int = 90,
+    tie_break: str = "sl_first",
+    dedup_window_min: int = None,
+):
+    if tie_break not in ("sl_first", "tp_first"):
+        tie_break = "sl_first"
+    prefer_sl_on_tie = tie_break == "sl_first"
+    if dedup_window_min is None:
+        dedup_window_min = config.DEDUP_WINDOW_MIN
+
+    with _progress_lock:
+        _backtest_progress["total"] = 0
+        _backtest_progress["done"] = 0
+        _backtest_progress["current"] = ""
+        _backtest_progress["stage"] = "starting"
+
+    max_slow = max(s["ema_slow"] for s in strategies)
+    warmup_days = max(1, int(np.ceil(max_slow / (24 * 60))) + 2)
+
+    prefetched = _prefetch_history_parallel(symbols, days, warmup_days)
+
+    # market_data keyed by (symbol, strategy_name) since each strategy
+    # resamples to a different base_tf.
+    market_data = {}
+    signal_rows = []
+    report_start_ts = None
+
+    for symbol in symbols:
+        df_1m = prefetched.get(symbol)
+        if df_1m is None or df_1m.empty or len(df_1m) < max_slow + 10:
+            continue
+
+        for strat in strategies:
+            strat_direction = strat.get("direction", direction)
+            with_signals = signal_engine.compute_signals_for_strategy(df_1m, strat)
+            if with_signals.empty or len(with_signals) < strat["ema_slow"] + 10:
+                continue
+
+            cutoff = with_signals.index.max() - pd.Timedelta(days=days)
+            report_start_ts = cutoff if report_start_ts is None else max(report_start_ts, cutoff)
+
+            key = (symbol, strat["name"])
+            market_data[key] = with_signals[["open", "high", "low", "close"]].copy()
+
+            if strat_direction in ("both", "long"):
+                longs = with_signals.index[with_signals["long_signal"].fillna(False) & (with_signals.index >= cutoff)]
+                signal_rows.extend(
+                    {"time": ts, "symbol": symbol, "direction": "long", "strategy": strat["name"],
+                     "tp_pct": strat["tp_pct"], "sl_pct": strat["sl_pct"],
+                     "entry_price": float(with_signals.at[ts, "close"])}
+                    for ts in longs
+                )
+            if strat_direction in ("both", "short"):
+                shorts = with_signals.index[with_signals["short_signal"].fillna(False) & (with_signals.index >= cutoff)]
+                signal_rows.extend(
+                    {"time": ts, "symbol": symbol, "direction": "short", "strategy": strat["name"],
+                     "tp_pct": strat["tp_pct"], "sl_pct": strat["sl_pct"],
+                     "entry_price": float(with_signals.at[ts, "close"])}
+                    for ts in shorts
+                )
+
+    if not market_data or not signal_rows:
+        return {"trades": [], "summary": _empty_summary(initial_equity), "equity_curve": []}
+
+    signal_rows = signal_engine.dedup_signal_rows(signal_rows, dedup_window_min)
+
+    signal_table = pd.DataFrame(signal_rows)
+    signal_table = signal_table.sort_values(["time", "symbol", "direction"]).reset_index(drop=True)
+    signal_grouped = {ts: g for ts, g in signal_table.groupby("time")}
+
+    all_times = pd.Index(sorted(set().union(*[
+        df.index[df.index >= report_start_ts] for df in market_data.values()
+    ])))
+
+    open_positions = []
+    equity = initial_equity
+    peak_equity = initial_equity
+    max_dd = 0.0
+    trade_rows = []
+    equity_curve = []
+
+    for ts in all_times:
+        still_open = []
+        for pos in open_positions:
+            df = market_data.get((pos["symbol"], pos["strategy"]))
+            if df is None or ts not in df.index:
+                still_open.append(pos)
+                continue
+
+            row = df.loc[ts]
+            entry_price = pos["entry_price"]
+            tp_pct = pos["tp_pct"]
+            sl_pct = pos["sl_pct"]
+
+            if pos["direction"] == "long":
+                stop_price = entry_price * (1.0 - sl_pct / 100.0)
+                take_price = entry_price * (1.0 + tp_pct / 100.0)
+                hit_sl = row["low"] <= stop_price
+                hit_tp = row["high"] >= take_price
+                exit_is_sl = prefer_sl_on_tie if (hit_sl and hit_tp) else hit_sl
+                exit_price = stop_price if exit_is_sl else take_price
+                pnl_pct = (exit_price / entry_price) - 1.0
+            else:
+                stop_price = entry_price * (1.0 + sl_pct / 100.0)
+                take_price = entry_price * (1.0 - tp_pct / 100.0)
+                hit_sl = row["high"] >= stop_price
+                hit_tp = row["low"] <= take_price
+                exit_is_sl = prefer_sl_on_tie if (hit_sl and hit_tp) else hit_sl
+                exit_price = stop_price if exit_is_sl else take_price
+                pnl_pct = 1.0 - (exit_price / entry_price)
+
+            if hit_sl or hit_tp:
+                pnl_usdt = pos["notional"] * pnl_pct
+                equity += pnl_usdt
+                trade_rows.append({
+                    "id": pos["id"],
+                    "symbol": pos["symbol"],
+                    "strategy": pos["strategy"],
+                    "direction": pos["direction"],
+                    "entry_time": pos["entry_time"].isoformat(),
+                    "exit_time": ts.isoformat(),
+                    "entry_price": entry_price,
+                    "exit_price": float(exit_price),
+                    "exit_reason": "SL" if exit_is_sl else "TP",
+                    "pnl_pct": pnl_pct * 100.0,
+                    "pnl_usdt": pnl_usdt,
+                })
+            else:
+                still_open.append(pos)
+
+        open_positions = still_open
+
+        if ts in signal_grouped:
+            for _, sig in signal_grouped[ts].iterrows():
+                if len(open_positions) >= max_open_positions:
+                    continue
+                open_positions.append({
+                    "id": str(uuid.uuid4()),
+                    "symbol": sig["symbol"],
+                    "strategy": sig["strategy"],
+                    "direction": sig["direction"],
+                    "entry_time": ts,
+                    "entry_price": float(sig["entry_price"]),
+                    "tp_pct": float(sig["tp_pct"]),
+                    "sl_pct": float(sig["sl_pct"]),
+                    "notional": margin_per_trade * leverage,
+                })
+
+        peak_equity = max(peak_equity, equity)
+        dd_pct = ((peak_equity - equity) / peak_equity) * 100 if peak_equity > 0 else 0.0
+        max_dd = max(max_dd, dd_pct)
+        equity_curve.append({"time": ts.isoformat(), "equity": equity})
+
+    trades_df = pd.DataFrame(trade_rows)
+    summary = _summarize(trades_df, initial_equity, equity, max_dd)
+    summary["data_start"] = all_times[0].isoformat() if len(all_times) else None
+    summary["data_end"] = all_times[-1].isoformat() if len(all_times) else None
+    summary["tie_break"] = tie_break
+
+    # Per-strategy breakdown so the dashboard can show each strategy's own
+    # winrate/PnL alongside the combined total.
+    by_strategy = {}
+    if not trades_df.empty:
+        for strat_name, group in trades_df.groupby("strategy"):
+            by_strategy[strat_name] = _summarize(group, initial_equity, initial_equity + group["pnl_usdt"].sum(), 0.0)
+
+    return {
+        "trades": trade_rows,
+        "summary": summary,
+        "by_strategy": by_strategy,
+        "equity_curve": _downsample_equity_curve(equity_curve),
+    }

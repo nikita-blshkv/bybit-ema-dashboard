@@ -6,9 +6,50 @@ engine share exactly the same defaults as leverage_sweep_short_only.py.
 """
 
 import os
+import sys
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# ---------------------------------------------------------------------------
+# PyInstaller-aware path resolution.
+#
+# When frozen into a onefile/onedir executable, sys.frozen is True and
+# __file__ resolves inside the temp extraction dir (onefile: sys._MEIPASS,
+# recreated and wiped on every launch) or the bundled app dir (onedir,
+# read-only once packaged, and different location on every machine).
+# Neither is safe for persistent state (trade_log.csv, open positions,
+# secrets.json) -- writing there either loses data on every restart
+# (onefile) or requires write access to the install directory (onedir,
+# often blocked on Windows Program Files / macOS .app bundles).
+#
+# So we split the two concerns:
+#   RESOURCE_DIR -- read-only bundled assets (dashboard/ HTML+JS+CSS).
+#                   Resolves inside the frozen bundle when frozen, else
+#                   the normal project directory.
+#   BASE_DIR     -- read/write state, secrets, backtest cache. Always a
+#                   real, writable, persistent directory next to the
+#                   executable (onedir) or in the user's home folder
+#                   under a dedicated app-data folder (onefile, where
+#                   "next to the executable" is a temp dir and unusable).
+# ---------------------------------------------------------------------------
+IS_FROZEN = getattr(sys, "frozen", False)
+
+if IS_FROZEN:
+    RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    # A dedicated, OS-appropriate, always-writable folder for this app's
+    # persistent data -- independent of where the .exe/.app happens to be
+    # installed, so it survives reinstalls/updates and never hits a
+    # permissions wall inside Program Files or a read-only .app bundle.
+    if sys.platform == "win32":
+        _appdata = os.environ.get("APPDATA") or str(Path.home())
+        BASE_DIR = Path(_appdata) / "BybitEmaDashboard"
+    elif sys.platform == "darwin":
+        BASE_DIR = Path.home() / "Library" / "Application Support" / "BybitEmaDashboard"
+    else:
+        BASE_DIR = Path.home() / ".bybit_ema_dashboard"
+else:
+    RESOURCE_DIR = Path(__file__).resolve().parent.parent
+    BASE_DIR = RESOURCE_DIR
+
 DATA_DIR = BASE_DIR / "data"
 
 # On Railway, a persistent volume is mounted (e.g. at /data) so that
@@ -47,7 +88,9 @@ SYMBOLS = [
 # Values are Bybit v5 kline "interval" strings.
 TIMEFRAMES = {
     "1m": "1",
+    "2m": "2",
     "4m": "4",
+    "7m": "7",
     "8m": "8",
     "1h": "60",
 }
@@ -85,13 +128,52 @@ DEFAULT_MARGIN_PER_TRADE = 1000.0
 DEFAULT_LEVERAGE = 10.0
 DEFAULT_MAX_OPEN_POSITIONS = 10
 
+# ---------------------------------------------------------------------------
+# Combined dual-strategy config (added Sep 2026, validated on 1y BTC backtest:
+# 211 trades, 64.9% winrate, +73% return, 10.3% max drawdown, PF 1.41).
+# Two independent sub-strategies run in parallel; signals are deduplicated
+# across both by (symbol, direction) within DEDUP_WINDOW_MIN minutes so the
+# same market move is never counted twice.
+# ---------------------------------------------------------------------------
+STRATEGIES = [
+    {
+        "name": "4m8m",
+        "label": "4m/8m HA EMA cross",
+        "base_tf": "4min",
+        "confirm_tf": "8min",
+        "use_heikin_ashi": True,
+        "ema_fast": 7,
+        "ema_slow": 133,
+        "tp_pct": 0.7,
+        "sl_pct": 0.9,
+        "direction": "both",
+        "color": "#3b82f6",  # blue, used by the dashboard chart markers
+    },
+    {
+        "name": "2m7m_ha",
+        "label": "2m/7m HA EMA cross",
+        "base_tf": "2min",
+        "confirm_tf": "7min",
+        "use_heikin_ashi": True,
+        "ema_fast": 7,
+        "ema_slow": 133,
+        "tp_pct": 0.7,
+        "sl_pct": 0.9,
+        "direction": "both",
+        "color": "#f97316",  # orange, used by the dashboard chart markers
+    },
+]
+
+DEDUP_WINDOW_MIN = 20  # minutes; same symbol+direction signal within this
+                       # window of an already-open position is skipped
+
 DEFAULT_TAKER_FEE_PCT = 0.05   # percent, per side
 DEFAULT_REBATE_PCT = 70.0      # percent of fees rebated
 
 # ---------------------------------------------------------------------------
 # Bybit public API (no keys required for market data)
 # ---------------------------------------------------------------------------
-BYBIT_BASE_URL = "https://api.bybit.com"
+BYBIT_BASE_URL = os.environ.get("BYBIT_BASE_URL", "https://api.bytick.com")
 BYBIT_CATEGORY = "linear"  # USDT perpetuals
 
 # ---------------------------------------------------------------------------

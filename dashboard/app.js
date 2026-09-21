@@ -210,6 +210,64 @@ function getCtCandleType() {
   return checked ? checked.dataset.val : "japanese";
 }
 
+async function loadStrategiesInfo() {
+  try {
+    const data = await apiGet("/api/strategies");
+    const el = document.getElementById("p-strategies-info");
+    if (!el) return;
+    const strategies = data.strategies || [];
+    if (!strategies.length) {
+      el.textContent = "Стратегии не найдены в config.py";
+      return;
+    }
+    el.innerHTML = strategies.map((s) => `
+      <div style="border-left:3px solid ${s.color || '#94a3b8'}; padding-left:8px;">
+        <b>${s.label || s.name}</b> (${s.base_tf}/${s.confirm_tf}${s.use_heikin_ashi ? ", Heikin-Ashi" : ""})<br>
+        EMA ${s.ema_fast}/${s.ema_slow} · TP ${s.tp_pct}% · SL ${s.sl_pct}% · ${s.direction}
+      </div>`).join("");
+  } catch (e) {
+    console.error("loadStrategiesInfo failed", e);
+    const el = document.getElementById("p-strategies-info");
+    if (el) el.textContent = "Не удалось загрузить список стратегий.";
+  }
+}
+
+async function loadBybitKeysStatus() {
+  try {
+    const data = await apiGet("/api/bybit_keys");
+    const el = document.getElementById("p-keys-status");
+    if (!el) return;
+    if (data.configured) {
+      el.textContent = `Ключи сохранены (${data.api_key_masked})`;
+      el.style.color = "#4caf50";
+    } else {
+      el.textContent = "Ключи не заданы — live-ордера на бирже отключены (только paper-режим).";
+      el.style.color = "#8b93a3";
+    }
+  } catch (e) {
+    console.error("loadBybitKeysStatus failed", e);
+  }
+}
+
+document.getElementById("p-bybit-keys-save").addEventListener("click", async () => {
+  const apiKey = document.getElementById("p-bybit-api-key").value.trim();
+  const apiSecret = document.getElementById("p-bybit-api-secret").value.trim();
+  if (!apiKey || !apiSecret) {
+    showToast("Заполните оба поля: API key и API secret.");
+    return;
+  }
+  try {
+    await apiPost("/api/bybit_keys", { api_key: apiKey, api_secret: apiSecret });
+    document.getElementById("p-bybit-api-key").value = "";
+    document.getElementById("p-bybit-api-secret").value = "";
+    showToast("Ключи сохранены.");
+    loadBybitKeysStatus();
+  } catch (e) {
+    console.error(e);
+    showToast("Не удалось сохранить ключи. См. консоль.");
+  }
+});
+
 function getStrategyEmaPeriods() {
   return {
     fast: parseInt(document.getElementById("p-ema-fast").value, 10) || 7,
@@ -513,9 +571,12 @@ async function refreshOpenPositions() {
     const body = document.getElementById("open-positions-body");
 
     if (!positions.length) {
-      body.innerHTML = `<tr class="empty-row"><td colspan="8">Нет открытых позиций</td></tr>`;
+      body.innerHTML = `<tr class="empty-row"><td colspan="9">Нет открытых позиций</td></tr>`;
       return;
     }
+
+    const strategyColors = { "4m8m": "#3b82f6", "2m7m_ha": "#f97316" };
+    const strategyLabels = { "4m8m": "4m/8m", "2m7m_ha": "2m/7m" };
 
     body.innerHTML = positions.map((p) => {
       let syncCell;
@@ -527,9 +588,14 @@ async function refreshOpenPositions() {
       } else {
         syncCell = `<span style="color:#8b93a3;">—</span>`;
       }
+      const stratName = p.strategy || "";
+      const stratColor = strategyColors[stratName] || "#8b93a3";
+      const stratLabel = strategyLabels[stratName] || stratName || "—";
+      const stratCell = `<span style="color:${stratColor};">${stratLabel}</span>`;
       return `
       <tr>
         <td>${p.symbol}</td>
+        <td>${stratCell}</td>
         <td class="${p.direction === 'long' ? 'pos-long' : 'pos-short'}">${p.direction.toUpperCase()}</td>
         <td>${fmtTime(p.entry_time)}</td>
         <td>${Number(p.entry_price).toFixed(4)}</td>
@@ -551,13 +617,21 @@ async function refreshTradeLog() {
     const body = document.getElementById("trade-log-body");
 
     if (!trades.length) {
-      body.innerHTML = `<tr class="empty-row"><td colspan="9">Пока нет закрытых сделок</td></tr>`;
+      body.innerHTML = `<tr class="empty-row"><td colspan="10">Пока нет закрытых сделок</td></tr>`;
       return;
     }
 
-    const rows = trades.slice().reverse().map((t) => `
+    const strategyColors2 = { "4m8m": "#3b82f6", "2m7m_ha": "#f97316" };
+    const strategyLabels2 = { "4m8m": "4m/8m", "2m7m_ha": "2m/7m" };
+
+    const rows = trades.slice().reverse().map((t) => {
+      const stratName = t.strategy || "";
+      const stratColor = strategyColors2[stratName] || "#8b93a3";
+      const stratLabel = strategyLabels2[stratName] || stratName || "—";
+      return `
       <tr>
         <td>${t.symbol}</td>
+        <td><span style="color:${stratColor};">${stratLabel}</span></td>
         <td class="${t.direction === 'long' ? 'pos-long' : 'pos-short'}">${(t.direction || '').toUpperCase()}</td>
         <td>${fmtTime(t.exit_time)}</td>
         <td>${Number(t.entry_price).toFixed(4)}</td>
@@ -566,7 +640,8 @@ async function refreshTradeLog() {
         <td class="${pnlClass(t.pnl_pct)}">${fmtPct(t.pnl_pct)}</td>
         <td class="${pnlClass(t.pnl_usdt)}">${fmtUsd(t.pnl_usdt)}</td>
         <td>${fmtTime(t.closed_at)}</td>
-      </tr>`).join("");
+      </tr>`;
+    }).join("");
     body.innerHTML = rows;
 
     // Equity and Net PnL must have one source of truth only:
@@ -580,6 +655,8 @@ async function refreshTradeLog() {
 
 // --- polling loop ---
 function startLivePolling() {
+  loadStrategiesInfo();
+  loadBybitKeysStatus();
   refreshStatus();
   refreshCandles();
   refreshOpenPositions();
@@ -625,7 +702,7 @@ function initBacktestChart() {
   });
 }
 
-["bt-symbols", "bt-direction"].forEach((id) => {
+["bt-symbols", "bt-direction", "bt-mode"].forEach((id) => {
   document.getElementById(id).addEventListener("click", (e) => {
     const label = e.target.closest("label[data-val]");
     if (!label) return;
@@ -650,6 +727,13 @@ function getBacktestDirection() {
   return checked ? checked.dataset.val : "both";
 }
 
+function getBacktestMode() {
+  const checked = document.querySelector("#bt-mode label.checked");
+  return checked ? checked.dataset.val : "single";
+}
+
+// #bt-mode is wired up together with bt-symbols/bt-direction above.
+
 document.getElementById("backtest-run-btn").addEventListener("click", async () => {
   const symbols = getBacktestSymbols();
   if (!symbols.length) {
@@ -657,12 +741,11 @@ document.getElementById("backtest-run-btn").addEventListener("click", async () =
     return;
   }
 
+  const mode = getBacktestMode();
+  const endpoint = mode === "dual" ? "/api/backtest_dual" : "/api/backtest";
+
   const body = {
     symbols,
-    ema_fast: parseInt(document.getElementById("bt-ema-fast").value, 10),
-    ema_slow: parseInt(document.getElementById("bt-ema-slow").value, 10),
-    tp_pct: parseFloat(document.getElementById("bt-tp").value),
-    sl_pct: parseFloat(document.getElementById("bt-sl").value),
     direction: getBacktestDirection(),
     initial_equity: parseFloat(document.getElementById("bt-initial-equity").value),
     margin_per_trade: parseFloat(document.getElementById("bt-margin").value),
@@ -670,6 +753,13 @@ document.getElementById("backtest-run-btn").addEventListener("click", async () =
     max_open_positions: parseInt(document.getElementById("bt-max-open").value, 10),
     days: parseInt(document.getElementById("bt-days").value, 10),
   };
+
+  if (mode === "single") {
+    body.ema_fast = parseInt(document.getElementById("bt-ema-fast").value, 10);
+    body.ema_slow = parseInt(document.getElementById("bt-ema-slow").value, 10);
+    body.tp_pct = parseFloat(document.getElementById("bt-tp").value);
+    body.sl_pct = parseFloat(document.getElementById("bt-sl").value);
+  }
 
   const btn = document.getElementById("backtest-run-btn");
   btn.disabled = true;
@@ -690,7 +780,7 @@ document.getElementById("backtest-run-btn").addEventListener("click", async () =
   }, 400);
 
   try {
-    const result = await apiPost("/api/backtest", body);
+    const result = await apiPost(endpoint, body);
     renderBacktestResult(result, body.initial_equity);
     showToast("Бэктест завершён.");
   } catch (e) {
@@ -724,6 +814,29 @@ function renderBacktestResult(result, initialEquity) {
   ddEl.className = "value neg";
 
   document.getElementById("bt-stat-trades").textContent = s.closed_trades;
+
+  const byStratEl = document.getElementById("bt-by-strategy");
+  const byStrat = result.by_strategy;
+  if (byStrat && Object.keys(byStrat).length) {
+    const strategyColors = { "4m8m": "#3b82f6", "2m7m_ha": "#f97316" };
+    const strategyLabels = { "4m8m": "4m/8m HA", "2m7m_ha": "2m/7m HA" };
+    byStratEl.style.display = "flex";
+    byStratEl.style.flexWrap = "wrap";
+    byStratEl.innerHTML = Object.entries(byStrat).map(([name, st]) => {
+      const color = strategyColors[name] || "#94a3b8";
+      const label = strategyLabels[name] || name;
+      const pnlCls = st.net_pnl_usdt >= 0 ? "pos" : "neg";
+      return `
+        <div class="stat-card" style="border-left:3px solid ${color};">
+          <div class="label">${label}</div>
+          <div class="value ${pnlCls}">${fmtUsd(st.net_pnl_usdt)}</div>
+          <div class="label">WR ${st.winrate_pct.toFixed(1)}% · ${st.closed_trades} сделок</div>
+        </div>`;
+    }).join("");
+  } else {
+    byStratEl.style.display = "none";
+    byStratEl.innerHTML = "";
+  }
 
   if (!btChart) initBacktestChart();
   const points = result.equity_curve.map((p) => ({
