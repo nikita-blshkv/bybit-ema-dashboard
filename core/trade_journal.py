@@ -103,7 +103,7 @@ def remove_open_position(position_id: str):
 # ---------------------------------------------------------------------------
 
 TRADE_LOG_FIELDS = [
-    "id", "symbol", "direction", "entry_time", "exit_time",
+    "id", "symbol", "strategy", "direction", "entry_time", "exit_time",
     "entry_price", "exit_price", "margin", "leverage", "notional",
     "tp_pct", "sl_pct", "exit_reason", "pnl_pct", "pnl_usdt",
     "fee_gross_usdt", "rebate_usdt", "fee_net_usdt", "pnl_after_fees_usdt",
